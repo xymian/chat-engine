@@ -1,0 +1,34 @@
+/build/
+/.gradle/
+
+.idea
+*.log
+
+# Compiled files
+*.class
+*.jar
+*.war
+*.ear
+
+# Generated files
+gen/
+generated/
+
+# Gradle wrapper
+!gradle/wrapper/gradle-wrapper.jar
+gradle/wrapper/gradle-wrapper.properties
+gradlew
+gradlew.bat
+
+# Kotlin-specific
+*.kotlin_module
+
+# Misc
+*.tmp
+*.swp
+*.bak
+
+
+# Optional: Kotlin Script (if using REPL)
+*.kts.cache/
+
