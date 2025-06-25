@@ -11,6 +11,8 @@ class ChatServiceManager<M: Message> private constructor() : IChatServiceManager
     var messageAckURL: String? = null
     private set
 
+    private var chatServiceListener: ChatServiceListener<M>? = null
+
     override fun connect() {
         TODO("Not yet implemented")
     }
@@ -20,10 +22,6 @@ class ChatServiceManager<M: Message> private constructor() : IChatServiceManager
     }
 
     override fun updateLocalChatHistory(): List<M> {
-        TODO("Not yet implemented")
-    }
-
-    override fun setMessageListener(listener: ChatServiceListener) {
         TODO("Not yet implemented")
     }
 
@@ -46,6 +44,13 @@ class ChatServiceManager<M: Message> private constructor() : IChatServiceManager
 
         private var messageAckURL: String? = null
 
+        private var chatServiceListener: ChatServiceListener<M>? = null
+
+        fun setChatServiceListener(listener: ChatServiceListener<M>): Builder<M> {
+            chatServiceListener = listener
+            return this
+        }
+
         fun setSocketURL(url: String): Builder<M> {
             socketURL = url
             return this
@@ -63,9 +68,10 @@ class ChatServiceManager<M: Message> private constructor() : IChatServiceManager
 
         fun build(): ChatServiceManager<M> {
             return ChatServiceManager<M>().apply {
-                socketURL = this.socketURL
-                chatHistoryURL = this.chatHistoryURL
-                messageAckURL = this.messageAckURL
+                socketURL = this@Builder.socketURL
+                chatHistoryURL = this@Builder.chatHistoryURL
+                messageAckURL = this@Builder.messageAckURL
+                chatServiceListener = this@Builder.chatServiceListener
             }
         }
     }

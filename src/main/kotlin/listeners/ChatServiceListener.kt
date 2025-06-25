@@ -2,9 +2,9 @@ package listeners
 
 import models.Message
 
-interface ChatServiceListener {
-    fun onSend(message: Message)
-    fun onReceiveMessage(message: Message)
+interface ChatServiceListener<M: Message> {
+    fun onSend(message: M)
+    fun onReceive(message: M)
     fun onDisconnect()
     fun onConnect()
 }

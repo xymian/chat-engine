@@ -6,7 +6,6 @@ interface IChatServiceManager<M: Message> {
     fun disconnect()
     fun updateLocalChatHistory(): List<M>
     fun sendMessage(message: M)
-    fun setMessageListener(listener: ChatServiceListener)
     fun acknowledgeMessage(message: M)
     fun acknowledgeMessagesInRange(timestampFrom: String, timestampTo: String)
 }
