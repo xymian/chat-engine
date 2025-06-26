@@ -18,6 +18,14 @@ fun main() {
                 TODO("Not yet implemented")
             }
 
+            override fun onMissingMessagesFetched(messages: List<ChatMessage>) {
+                TODO("Not yet implemented")
+            }
+
+            override fun onError(error: ChatServiceError, message: String) {
+                TODO("Not yet implemented")
+            }
+
             override fun onDisconnect() {
                 TODO("Not yet implemented")
             }
@@ -26,7 +34,7 @@ fun main() {
                 TODO("Not yet implemented")
             }
 
-        }).build()
+        }).build(ChatMessage.serializer())
 
 }
 

@@ -1,0 +1,3 @@
+enum class ChatServiceError {
+    FETCH_REMOTE_FAILED, ACKNOWLEDGE_FAILED, LOCAL_SAVE_FAILED
+}
