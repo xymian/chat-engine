@@ -4,6 +4,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 abstract class Message(
-    val messageTimestamp: String,
-    val messageId: String,
+    val _timestamp: String,
+    val _messageId: String,
+    val _sender: String,
+    val _receiver: String,
+    val _message: String
 )

@@ -1,35 +1,36 @@
 import kotlinx.serialization.KSerializer
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.Serializer
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.serializer
 import listeners.ChatServiceListener
 import models.Message
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import okio.ByteString
 import java.io.IOException
-import java.io.Serializable
 import java.util.PriorityQueue
 
 class ChatServiceManager<M: Message>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
 
-    private var messageQueue = PriorityQueue<String>()
-    var socketURL: String? = null
-    private set
+    private var messageQueue = PriorityQueue<M>()
+    private var stagingMessages = mutableListOf<M>()
 
-    var chatHistoryURL: String? = null
-    private set
+    private var shouldExposeReceivedSocketMessages = true
+    private var shouldGoToStaging = false
+    private var isSocketConnected = false
 
-    var messageAckURL: String? = null
-    private set
+    private var socketURL: String? = null
+    private var chatHistoryURL: String? = null
+    private var messageAckURL: String? = null
 
     private var chatServiceListener: ChatServiceListener<M>? = null
 
     private val client = OkHttpClient()
     private var socket: WebSocket? = null
+
+    private var me: String? = null
+    private var receivers: List<String> = listOf()
+
+    private var ackRequestBuilder: ((M) -> String)? = null
 
     override fun connect() {
         client.dispatcher.executorService.shutdown()
@@ -39,14 +40,14 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         socket?.close(1000, "end session")
     }
 
-    override fun fetchMissingMessages() {
+    private fun fetchMissingMessages() {
         chatHistoryURL?.let {
             client.newCall(Request.Builder().url(it).build())
                 .enqueue(fetchRemoteChatHistoryResponseListener())
         }
     }
 
-    override fun acknowledgeMessagesInRange(serializedAckRequest: String) {
+    private fun acknowledgeMessagesInRange(serializedAckRequest: String) {
         messageAckURL?.let {
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = serializedAckRequest.toRequestBody(mediaType)
@@ -89,6 +90,12 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                         res.body?.let { body ->
                             val messages = Json.decodeFromString<List<M>>(body.toString())
                             chatServiceListener?.onMissingMessagesFetched(messages)
+                            if (!isSocketConnected) {
+                                connect()
+                                fetchMissingMessages()
+                            } else {
+                                emptyMessageQueueAndExposeMessages()
+                            }
                         }
                     }
                 }
@@ -96,10 +103,31 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
+    private fun emptyMessageQueueAndExposeMessages() {
+        shouldGoToStaging = true
+        val messages = mutableListOf<M>()
+        while (messageQueue.isNotEmpty()) {
+            messages.add(messageQueue.poll())
+        }
+        messages.addAll(stagingMessages)
+        stagingMessages = mutableListOf()
+        chatServiceListener?.onReceive(messages.sortedBy { it._timestamp })
+        shouldExposeReceivedSocketMessages = true
+    }
+
+    private fun isAValidMessageReceiver(userId: String): Boolean {
+        return if (userId != me) {
+            receivers.contains(userId)
+        } else {
+            false
+        }
+    }
+
     private fun webSocketListener(): WebSocketListener {
         return object : WebSocketListener() {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                super.onClosed(webSocket, code, reason)
+                isSocketConnected = false
+                shouldExposeReceivedSocketMessages = false
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -107,33 +135,87 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                super.onFailure(webSocket, t, response)
+                isSocketConnected = false
+                shouldExposeReceivedSocketMessages = false
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                super.onMessage(webSocket, text)
-                // call API to acknowledge message
-            }
+                val message = Json.decodeFromString(serializer, text)
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                super.onMessage(webSocket, bytes)
-                // call API to acknowledge message
+                if (isAValidMessageReceiver(message._sender)) {
+                    ackRequestBuilder?.invoke(message)?.let { request ->
+                        acknowledgeMessagesInRange(request)
+                    }
+                }
+
+                if (shouldExposeReceivedSocketMessages) {
+                    if (isAValidMessageReceiver(message._sender)) {
+                        if (stagingMessages.isNotEmpty()) {
+                            chatServiceListener?.onReceive(
+                                stagingMessages.apply { add(message) }.sortedBy { it._timestamp }
+                            )
+                            stagingMessages = mutableListOf()
+                        }
+                        chatServiceListener?.onReceive(message)
+                    } else {
+                        if (message._sender == me) {
+                            chatServiceListener?.onSend(message)
+                        } else {
+                            chatServiceListener?.onError(
+                                ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message._sender}"
+                            )
+                        }
+                    }
+                } else {
+                    if (shouldGoToStaging) {
+                        if (isAValidMessageReceiver(message._sender)) {
+                            stagingMessages.add(message)
+                        }
+                    } else {
+                        if (isAValidMessageReceiver(message._sender)) {
+                            messageQueue.add(message)
+                        }
+                    }
+                }
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                fetchRemoteChatHistoryResponseListener()
+                isSocketConnected = true
+                fetchMissingMessages()
             }
         }
     }
 
     class Builder<M: Message> {
         private var socketURL: String? = null
-
         private var chatHistoryURL: String? = null
-
         private var messageAckURL: String? = null
 
         private var chatServiceListener: ChatServiceListener<M>? = null
+
+        private var me: String? = null
+        private var receivers: List<String> = listOf()
+
+        private var ackRequestBuilder: ((M) -> String)? = null
+
+        fun setAckRequestBuilder(builder: (M) -> String): Builder<M> {
+            ackRequestBuilder = builder
+            return this
+        }
+        fun setUsername(userId: String): Builder<M> {
+            me = userId
+            return this
+        }
+
+        fun setExpectedReceiver(userId: String): Builder<M> {
+            receivers = listOf(userId)
+            return this
+        }
+
+        fun setExpectedReceivers(userIds: List<String>): Builder<M> {
+            receivers = userIds
+            return this
+        }
 
         fun setChatServiceListener(listener: ChatServiceListener<M>): Builder<M> {
             chatServiceListener = listener
@@ -164,6 +246,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 socketURL?.let {
                     socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
                 }
+                this.me = this@Builder.me
+                this.receivers = this@Builder.receivers
+                this.ackRequestBuilder = this@Builder.ackRequestBuilder
             }
         }
     }
