@@ -1,8 +1,8 @@
 import models.Message
 
 interface ILocalStorage<M: Message> {
-    fun deleteMessage(messageReference: String) {}
-    fun retrievePaginatedMessages(page: Int, pageSize: Int)
-    fun store(message: M)
-    fun store(messages: List<M>)
+    suspend fun deleteMessage(messageReference: String) {}
+    suspend fun retrievePaginatedMessages(page: Int, pageSize: Int)
+    suspend fun store(message: M)
+    suspend fun store(messages: List<M>)
 }

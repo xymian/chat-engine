@@ -6,6 +6,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+fun blockAndEmit() {
+
+}
+
 fun runLockingTask(mutex: Mutex, lockingTask: suspend () -> Unit) {
     runBlocking {
         launch(Dispatchers.Default) {
