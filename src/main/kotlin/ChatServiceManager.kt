@@ -1,3 +1,4 @@
+import io.github.aakira.napier.Napier
 import kotlinx.coroutines.delay
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
@@ -82,13 +83,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun acknowledgeMessagesResponseListener(): Callback {
         return object: Callback {
             override fun onFailure(call: Call, e: IOException) {
+                Napier.e("error: ${e.message}")
                 chatServiceListener?.onError(
                     ChatServiceError.ACKNOWLEDGE_FAILED, e.message ?: ""
                 )
             }
 
             override fun onResponse(call: Call, response: Response) {
-
             }
         }
     }
@@ -96,9 +97,11 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun fetchRemoteChatHistoryResponseListener(): Callback {
         return object: Callback {
             override fun onFailure(call: Call, e: IOException) {
+                Napier.e("error: ${e.message}")
                 chatServiceListener?.onError(
                     ChatServiceError.FETCH_REMOTE_FAILED, e.message ?: ""
                 )
+                scheduleMissingMessageRetry()
             }
 
             override fun onResponse(call: Call, response: Response) {
@@ -141,6 +144,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                                 }
                             }
                         }
+                    } else {
+                        Napier.e("server error: ${res.message}")
                     }
                 }
             }
@@ -152,6 +157,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             delay(delay)
             delay = (delay * 2).coerceAtMost(maxDelay)
             startSocket()
+        }
+    }
+
+    private fun scheduleMissingMessageRetry() {
+        runInBackground {
+            delay = (delay * 2).coerceAtMost(maxDelay)
+            fetchMissingMessages()
         }
     }
 

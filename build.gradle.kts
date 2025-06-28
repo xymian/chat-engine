@@ -22,6 +22,7 @@ kotlin {
 dependencies {
     testImplementation(kotlin("test"))
 
+    implementation("io.github.aakira:napier:2.6.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(kotlin("stdlib"))
