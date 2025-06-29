@@ -1,19 +1,15 @@
 import kotlinx.serialization.Serializable
 import listeners.ChatServiceListener
 import models.Message
+import models.FetchMessagesResponse
 
 fun main() {
     println("hello, kotlin")
 
-    ChatServiceManager.Builder<ChatMessage>()
+    ChatServiceManager.Builder<ChatMessage, FetchMessagesResponse<ChatMessage>>()
         .setSocketURL("")
-        .setChatDatabaseURL("")
         .setUsername("")
-        .setExpectedReceiver("")
-        .setMessageAckURL("")
-        .setAckRequestBuilder { receivedMessage ->
-            getAckRequestBuilder(receivedMessage)
-        }
+        .setExpectedReceivers(listOf())
         .setChatServiceListener(chatServiceLister)
         .build(ChatMessage.serializer())
 
@@ -37,10 +33,6 @@ val chatServiceLister = object : ChatServiceListener<ChatMessage> {
     }
 
     override fun onReceive(messages: List<ChatMessage>) {
-        TODO("Not yet implemented")
-    }
-
-    override fun onMissingMessagesFetched(messages: List<ChatMessage>) {
         TODO("Not yet implemented")
     }
 
@@ -73,3 +65,9 @@ class ChatMessage(
     _messageId = messageReference, _timestamp = timestamp, _message = text,
     _sender = sender, _receiver = receiver
 )
+
+class ChatHistoryResponse(
+    val data: List<ChatMessage>,
+    val isSuccessful: Boolean,
+    val error: Exception
+): FetchMessagesResponse<ChatMessage>(data, isSuccessful, error)

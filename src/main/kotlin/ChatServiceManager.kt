@@ -4,17 +4,14 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.sync.Mutex
 import listeners.ChatServiceListener
+import models.FetchMessagesResponse
 import models.Message
 import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import utils.runInBackground
-import utils.runLockingTask
-import utils.runOnMainThread
-import java.io.IOException
+import utils.*
+import java.lang.Exception
 import java.util.PriorityQueue
 
-class ChatServiceManager<M: Message>
+class ChatServiceManager<M: Message, R: FetchMessagesResponse<M>>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
 
     private var messageQueue = PriorityQueue<M>()
@@ -22,9 +19,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var exposeSocketMessages = true
     private var isSocketConnected = false
 
+    private var missingMessagesCaller: ChatEndpointCaller? = null
+    private var messageAckCaller: ChatEndpointCaller? = null
     private var socketURL: String? = null
-    private var chatHistoryURL: String? = null
-    private var messageAckURL: String? = null
+
     private var me: String? = null
     private var receivers: List<String> = listOf()
 
@@ -34,15 +32,15 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var socket: WebSocket? = null
     private var localStorageInstance: ILocalStorage<M>? = null
 
-    private var ackRequestBuilder: ((from: M, to: M) -> String)? = null
-
     private val mutex = Mutex()
 
     private var delay = 1_000L
     private val maxDelay = 16_000L
 
     override fun connect() {
-        fetchMissingMessages()
+        runInBackground {
+            fetchMissingMessages()
+        }
     }
 
     private fun startSocket() {
@@ -58,21 +56,49 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         client.dispatcher.executorService.shutdown()
     }
 
-    private fun fetchMissingMessages() {
-        chatHistoryURL?.let {
+    private suspend fun fetchMissingMessages() {
+        missingMessagesCaller?.call(data = null, object: ChatEndpointCaller.ResponseCallback<R> {
+            override fun onResponse(response: R) {
+                runOnMainThread {
+                    onMissingMessagesFetched(response)
+                }
+            }
+
+            override fun onFailure(e: Exception?) {
+                Napier.e("error: ${e?.message}")
+                runOnMainThread {
+                    chatServiceListener?.onError(
+                        ChatServiceError.FETCH_REMOTE_FAILED, e?.message ?: "unknown error"
+                    )
+                    scheduleMissingMessageRetry()
+                }
+            }
+        })
+        /*chatHistoryURL?.let {
             client.newCall(Request.Builder().url(it).build())
                 .enqueue(fetchRemoteChatHistoryResponseListener())
-        }
+        }*/
     }
 
-    private fun acknowledgeMessagesInRange(serializedAckRequest: String) {
-        messageAckURL?.let {
+    private suspend fun acknowledgeMessages(messages: List<M>) {
+        messageAckCaller?.call(data = messages, object: ChatEndpointCaller.ResponseCallback<Any> {
+            override fun onResponse(response: Any) {
+
+            }
+            override fun onFailure(e: Exception?) {
+                Napier.e("error: ${e?.message}")
+                chatServiceListener?.onError(
+                    ChatServiceError.ACKNOWLEDGE_FAILED, e?.message ?: ""
+                )
+            }
+        })
+        /*messageAckURL?.let {
             val mediaType = "application/json; charset=utf-8".toMediaType()
             val requestBody = serializedAckRequest.toRequestBody(mediaType)
             client.newCall(Request.Builder().url(it)
                 .post(requestBody).build())
                 .enqueue(acknowledgeMessagesResponseListener())
-        }
+        }*/
     }
 
     override fun sendMessage(message: M) {
@@ -80,75 +106,46 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         socket?.send(Json.encodeToString(serializer, message))
     }
 
-    private fun acknowledgeMessagesResponseListener(): Callback {
-        return object: Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Napier.e("error: ${e.message}")
-                chatServiceListener?.onError(
-                    ChatServiceError.ACKNOWLEDGE_FAILED, e.message ?: ""
-                )
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-            }
-        }
-    }
-
-    private fun fetchRemoteChatHistoryResponseListener(): Callback {
-        return object: Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Napier.e("error: ${e.message}")
-                chatServiceListener?.onError(
-                    ChatServiceError.FETCH_REMOTE_FAILED, e.message ?: ""
-                )
-                scheduleMissingMessageRetry()
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                response.use { res ->
-                    if (response.isSuccessful) {
-                        res.body?.let { body ->
-                            val messages = Json.decodeFromString<List<M>>(body.toString()).sortedBy { it._timestamp }
-                            if (messages.isNotEmpty()) {
-                                ackRequestBuilder?.invoke(messages[0], messages.last())?.let { request ->
-                                    acknowledgeMessagesInRange(request)
+    private fun onMissingMessagesFetched(response: R) {
+        if (response._isSuccessful) {
+            response._data?.let { messages ->
+                if (messages.isNotEmpty()) {
+                    runInBackground {
+                        acknowledgeMessages(messages)
+                    }
+                }
+                runInBackground {
+                    localStorageInstance?.store(messages)
+                }
+                if (exposeSocketMessages) {
+                    chatServiceListener?.onReceive(messages)
+                } else {
+                    runLockingTask(mutex) {
+                        messageQueue.addAll(messages)
+                    }
+                }
+                if (!isSocketConnected) {
+                    exposeSocketMessages = false
+                    scheduleSocketReconnect()
+                } else {
+                    runLockingTask(mutex) {
+                        if (messageQueue.isNotEmpty()) {
+                            emptyMessageQueue {
+                                runOnMainThread {
+                                    chatServiceListener?.onReceive(it.sortedBy { it._timestamp })
                                 }
                             }
-                            runInBackground {
-                                localStorageInstance?.store(messages)
-                            }
-                            if (exposeSocketMessages) {
+                        } else {
+                            runOnMainThread {
                                 chatServiceListener?.onReceive(messages)
-                            } else {
-                                runLockingTask(mutex) {
-                                    messageQueue.addAll(messages)
-                                }
-                            }
-                            if (!isSocketConnected) {
-                                exposeSocketMessages = false
-                                scheduleSocketReconnect()
-                            } else {
-                                runLockingTask(mutex) {
-                                    if (messageQueue.isNotEmpty()) {
-                                        emptyMessageQueue {
-                                            runOnMainThread {
-                                                chatServiceListener?.onReceive(it.sortedBy { it._timestamp })
-                                            }
-                                        }
-                                    } else {
-                                        runOnMainThread {
-                                            chatServiceListener?.onReceive(messages)
-                                        }
-                                    }
-                                    exposeSocketMessages = true
-                                }
                             }
                         }
-                    } else {
-                        Napier.e("server error: ${res.message}")
+                        exposeSocketMessages = true
                     }
                 }
             }
+        } else {
+            Napier.e("server error: ${response._error?.message}")
         }
     }
 
@@ -197,14 +194,16 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 isSocketConnected = false
                 exposeSocketMessages = false
-                fetchMissingMessages()
+                runInBackground {
+                    fetchMissingMessages()
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val message = Json.decodeFromString(serializer, text)
                 if (isSenderPartOfThisChatAndIsntMe(message._sender)) {
-                    ackRequestBuilder?.invoke(message, message)?.let { request ->
-                        acknowledgeMessagesInRange(request)
+                    runInBackground {
+                        acknowledgeMessages(listOf(message))
                     }
                 }
                 runInBackground {
@@ -257,74 +256,65 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isSocketConnected = true
                 chatServiceListener?.onConnect()
-                fetchMissingMessages()
+                runInBackground {
+                    fetchMissingMessages()
+                }
             }
         }
     }
 
-    class Builder<M: Message> {
+    class Builder<M: Message, R: FetchMessagesResponse<M>> {
         private var socketURL: String? = null
-        private var chatHistoryURL: String? = null
-        private var messageAckURL: String? = null
 
         private var chatServiceListener: ChatServiceListener<M>? = null
 
         private var me: String? = null
         private var receivers: List<String> = listOf()
 
-        private var ackRequestBuilder: ((from: M, to: M) -> String)? = null
+        private var missingMessagesCaller: ChatEndpointCaller? = null
+        private var messageAckCaller: ChatEndpointCaller? = null
 
-        fun setAckRequestBuilder(builder: (from: M, to: M) -> String): Builder<M> {
-            ackRequestBuilder = builder
+        fun setMessageAckCaller(caller: ChatEndpointCaller): Builder<M, R> {
+            messageAckCaller = caller
             return this
         }
-        fun setUsername(userId: String): Builder<M> {
+
+        fun setMissingMessagesCaller(caller: ChatEndpointCaller): Builder<M, R> {
+            missingMessagesCaller = caller
+            return this
+        }
+
+        fun setUsername(userId: String): Builder<M, R> {
             me = userId
             return this
         }
 
-        fun setExpectedReceiver(userId: String): Builder<M> {
-            receivers = listOf(userId)
-            return this
-        }
-
-        fun setExpectedReceivers(userIds: List<String>): Builder<M> {
+        fun setExpectedReceivers(userIds: List<String>): Builder<M, R> {
             receivers = userIds
             return this
         }
 
-        fun setChatServiceListener(listener: ChatServiceListener<M>): Builder<M> {
+        fun setChatServiceListener(listener: ChatServiceListener<M>): Builder<M, R> {
             chatServiceListener = listener
             return this
         }
 
-        fun setSocketURL(url: String): Builder<M> {
+        fun setSocketURL(url: String): Builder<M, R> {
             socketURL = url
             return this
         }
 
-        fun setChatDatabaseURL(url: String): Builder<M> {
-            chatHistoryURL = url
-            return this
-        }
-
-        fun setMessageAckURL(url: String): Builder<M> {
-            messageAckURL = url
-            return this
-        }
-
-        fun build(serializer: KSerializer<M>): ChatServiceManager<M> {
+        fun build(serializer: KSerializer<M>): ChatServiceManager<M, FetchMessagesResponse<M>> {
             return ChatServiceManager(serializer).apply {
                 socketURL = this@Builder.socketURL
-                chatHistoryURL = this@Builder.chatHistoryURL
-                messageAckURL = this@Builder.messageAckURL
                 chatServiceListener = this@Builder.chatServiceListener
                 socketURL?.let {
                     socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
                 }
                 this.me = this@Builder.me
                 this.receivers = this@Builder.receivers
-                this.ackRequestBuilder = this@Builder.ackRequestBuilder
+                this.missingMessagesCaller = this@Builder.missingMessagesCaller
+                this.messageAckCaller = this@Builder.messageAckCaller
             }
         }
     }
