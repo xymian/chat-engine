@@ -15,16 +15,21 @@ import java.util.PriorityQueue
 class ChatServiceManager<M: Message>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
 
-    private var messageQueue = PriorityQueue<M>()
+    private var receivedMessagesQueue = PriorityQueue<M>()
+    private var sendMessagesQueue = PriorityQueue<M>()
     private var ackMessages = mutableListOf<M>()
 
     private var exposeSocketMessages = true
-    private var isSocketConnected = false
+    private val socketIsConnected: Boolean
+        get() {
+            return socketState == SocketStates.CONNECTED
+        }
 
     private var missingMessagesCaller: ChatEndpointCaller<M, FetchMessagesResponse<M>>? = null
     private var messageAckCaller: ChatEndpointCaller<List<M>, ChatResponse>? = null
 
     private var socketURL: String? = null
+    private var socketState: SocketStates? = null
 
     private var me: String? = null
     private var receivers: List<String> = listOf()
@@ -48,7 +53,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private fun startSocket() {
         socketURL?.let {
-            if (!isSocketConnected) {
+            if (!socketIsConnected) {
                 socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
             }
         }
@@ -80,6 +85,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private suspend fun acknowledgeMessages(messages: List<M>) {
         messageAckCaller?.call(data = messages, handler = object: ChatEndpointCaller.ResponseCallback<ChatResponse> {
             override fun onResponse(response: ChatResponse) {
+                if (response._isSuccessful == true) {
+                    ackMessages = mutableListOf()
+                }
                 runInBackground {
                     fetchMissingMessages()
                 }
@@ -98,8 +106,26 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     override fun sendMessage(message: M) {
-        chatServiceListener?.onSend(message)
-        socket?.send(Json.encodeToString(serializer, message))
+        if (message._sender == me) {
+            runInBackground {
+                localStorageInstance?.store(message)
+            }
+        }
+        if (socketState == SocketStates.NOT_CONNECTED || socketState == SocketStates.CLOSED) {
+            sendMessagesQueue.add(message)
+        } else {
+            if (socketIsConnected) {
+                if (sendMessagesQueue.isNotEmpty()) {
+                    sendMessagesQueue.emptyQueue().let {
+                        it.forEach { m ->
+                            socket?.send(Json.encodeToString(serializer, m))
+                        }
+                    }
+                } else {
+                    socket?.send(Json.encodeToString(serializer, message))
+                }
+            }
+        }
     }
 
     private fun onMissingMessagesFetched(response: FetchMessagesResponse<M>) {
@@ -117,18 +143,18 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     chatServiceListener?.onReceive(messages)
                 } else {
                     runLockingTask(mutex) {
-                        messageQueue.addAll(messages)
+                        receivedMessagesQueue.addAll(messages)
                     }
                 }
-                if (!isSocketConnected) {
+                if (!socketIsConnected) {
                     exposeSocketMessages = false
                     scheduleSocketReconnect()
                 } else {
                     runLockingTask(mutex) {
-                        if (messageQueue.isNotEmpty()) {
-                            emptyMessageQueue {
+                        if (receivedMessagesQueue.isNotEmpty()) {
+                            receivedMessagesQueue.emptyQueue().let {
                                 runOnMainThread {
-                                    chatServiceListener?.onReceive(it.sortedBy { it._timestamp })
+                                    chatServiceListener?.onReceive(it)
                                 }
                             }
                         } else {
@@ -141,7 +167,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 }
             }
         } else {
-            Napier.e("server error: ${response._error}")
+            Napier.e("server error: ${response._message}")
         }
     }
 
@@ -160,14 +186,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun emptyMessageQueue(exposeMessages: (List<M>) -> Unit) {
-        val messages = mutableListOf<M>()
-        while (messageQueue.isNotEmpty()) {
-            messages.add(messageQueue.poll())
-        }
-        exposeMessages(messages.distinctBy { it._messageId })
-    }
-
     private fun isSenderPartOfThisChatAndIsntMe(userId: String?): Boolean {
         return if (userId != me) {
             receivers.contains(userId)
@@ -179,7 +197,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun webSocketListener(): WebSocketListener {
         return object : WebSocketListener() {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                isSocketConnected = false
+                socketState = SocketStates.CLOSED
                 exposeSocketMessages = false
             }
 
@@ -188,7 +206,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 runInBackground {
                     acknowledgeMessages(ackMessages)
-                    isSocketConnected = false
+                    socketState = SocketStates.FAILED
                     exposeSocketMessages = false
                 }
             }
@@ -197,18 +215,17 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 val message = Json.decodeFromString(serializer, text)
                 if (isSenderPartOfThisChatAndIsntMe(message._sender)) {
                     ackMessages.add(message)
-                }
-                runInBackground {
-                    localStorageInstance?.store(message)
-                }
-                if (exposeSocketMessages) {
-                    if (isSenderPartOfThisChatAndIsntMe(message._sender)) {
+                    runInBackground {
+                        localStorageInstance?.store(message)
+                    }
+
+                    if (exposeSocketMessages) {
                         runLockingTask(mutex) {
-                            messageQueue.add(message)
-                            if (messageQueue.isNotEmpty()) {
-                                emptyMessageQueue {
+                            receivedMessagesQueue.add(message)
+                            if (receivedMessagesQueue.isNotEmpty()) {
+                                receivedMessagesQueue.emptyQueue().let {
                                     runOnMainThread {
-                                        chatServiceListener?.onReceive(it.sortedBy { it._timestamp })
+                                        chatServiceListener?.onReceive(it)
                                     }
                                 }
                             } else {
@@ -218,35 +235,24 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                             }
                         }
                     } else {
-                        if (message._sender == me) {
-                            chatServiceListener?.onSend(message)
-                        } else {
-                            chatServiceListener?.onError(
-                                ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message._sender}"
-                            )
-                            disconnect()
+                        runLockingTask(mutex) {
+                            receivedMessagesQueue.add(message)
                         }
                     }
                 } else {
-                    if (isSenderPartOfThisChatAndIsntMe(message._sender)) {
-                        runLockingTask(mutex) {
-                            messageQueue.add(message)
-                        }
+                    if (message._sender != me) {
+                        chatServiceListener?.onError(
+                            ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message._sender}"
+                        )
+                        disconnect()
                     } else {
-                        if (message._sender == me) {
-                            chatServiceListener?.onSend(message)
-                        } else {
-                            chatServiceListener?.onError(
-                                ChatServiceError.MESSAGE_LEAK_ERROR,
-                                "unknown message sender ${message._sender}"
-                            )
-                        }
+                        chatServiceListener?.onSend(message)
                     }
                 }
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                isSocketConnected = true
+                socketState = SocketStates.CONNECTED
                 chatServiceListener?.onConnect()
                 runInBackground {
                     fetchMissingMessages()
@@ -302,6 +308,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 chatServiceListener = this@Builder.chatServiceListener
                 socketURL?.let {
                     socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
+                    this.socketState = SocketStates.NOT_CONNECTED
                 }
                 this.me = this@Builder.me
                 this.receivers = this@Builder.receivers

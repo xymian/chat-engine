@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "org.example"
-version = "1.0-SNAPSHOT"
+version = "1.1"
 
 repositories {
     mavenCentral()
@@ -27,6 +27,11 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(kotlin("stdlib"))
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+}
+
+tasks.register<Jar>("customJar") {
+    archiveBaseName.set("chat-library")
+    from(sourceSets.main.get().output)
 }
 
 tasks.test {
