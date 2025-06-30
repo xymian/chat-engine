@@ -1,13 +1,17 @@
 package models
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 open class ChatResponse(
-    open val _data: Any?,
-    open val _isSuccessful: Boolean,
-    open val _error: Exception? = null
+    open val _data: String?,
+    open val _isSuccessful: Boolean?,
+    open val _error: String?
 )
 
+@Serializable
 open class FetchMessagesResponse<M: Message>(
-    override val _data: List<M>?,
-    override val _isSuccessful: Boolean,
-    override val _error: Exception? = null
-): ChatResponse(_data, _isSuccessful, _error)
+    val _data: List<M>?,
+    val _isSuccessful: Boolean?,
+    val _error: String?
+)

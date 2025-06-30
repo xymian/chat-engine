@@ -1,14 +1,23 @@
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import listeners.ChatServiceListener
+import models.ChatResponse
 import models.Message
 import models.FetchMessagesResponse
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import utils.ChatEndpointCaller
+import java.io.IOException
 
 fun main() {
     println("hello, kotlin")
 
-    ChatServiceManager.Builder<ChatMessage, FetchMessagesResponse<ChatMessage>>()
+    ChatServiceManager.Builder<ChatMessage>()
         .setSocketURL("")
         .setUsername("")
+        .setMissingMessagesCaller(GetMissingMessagesUserCase())
+        .setMessageAckCaller(AcknowledgeMessagesUseCase())
         .setExpectedReceivers(listOf())
         .setChatServiceListener(chatServiceLister)
         .build(ChatMessage.serializer())
@@ -54,20 +63,81 @@ fun getAckRequestBuilder(receivedMessage: ChatMessage): String {
 
 @Serializable
 class ChatMessage(
-    val message: String,
-    val timestamp: String,
-    val messageReference: String,
-    val chatReference: String,
-    val text: String,
-    val sender: String,
-    val receiver: String,
+    val message: String?,
+    val timestamp: String?,
+    val messageReference: String?,
+    val chatReference: String?,
+    val text: String?,
+    val sender: String?,
+    val receiver: String?,
     ): Message(
     _messageId = messageReference, _timestamp = timestamp, _message = text,
     _sender = sender, _receiver = receiver
 )
-
-class ChatHistoryResponse(
+@Serializable
+data class ChatHistoryResponse(
     val data: List<ChatMessage>,
-    val isSuccessful: Boolean,
-    val error: Exception
+    val isSuccessful: Boolean?,
+    val error: String,
 ): FetchMessagesResponse<ChatMessage>(data, isSuccessful, error)
+
+@Serializable
+data class AckResponse(
+    val data: String?,
+    val isSuccessful: Boolean?,
+    val error: String?,
+): ChatResponse(data, isSuccessful, error)
+
+class GetMissingMessagesUserCase: ChatEndpointCaller<ChatMessage, ChatHistoryResponse> {
+
+    private val client: OkHttpClient = OkHttpClient()
+
+    override suspend fun call(data: ChatMessage?, handler: ChatEndpointCaller.ResponseCallback<ChatHistoryResponse>) {
+        client.newCall(Request.Builder().url("").build())
+            .enqueue(object: Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    handler.onFailure(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    handler.onResponse(Json.decodeFromString(ChatHistoryResponse.serializer(), response.body.toString()))
+                }
+            })
+    }
+}
+
+class AcknowledgeMessagesUseCase: ChatEndpointCaller<List<ChatMessage>, AckResponse> {
+
+    private val client: OkHttpClient = OkHttpClient()
+
+    override suspend fun call(data: List<ChatMessage>?, handler: ChatEndpointCaller.ResponseCallback<AckResponse>) {
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        data?.let { messages ->
+            val sortedMessages = messages.sortedBy { it.timestamp }
+            val requestBody = getAckRequestBuilder(
+                from = sortedMessages.first(), to = sortedMessages.last()).toRequestBody(mediaType)
+            client.newCall(Request.Builder().url("")
+                .post(requestBody).build())
+                .enqueue(object: Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        handler.onFailure(e)
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        handler.onResponse(Json.decodeFromString(AckResponse.serializer(), response.body.toString()))
+                    }
+                })
+        }
+    }
+
+    private fun getAckRequestBuilder(from: ChatMessage, to: ChatMessage): String {
+        return """
+                {
+                    "username":${from.sender},
+                    "chatReference":${from.chatReference},
+                    "from":${from.timestamp},
+                    "to":${to.timestamp}
+                }
+            """.trimIndent()
+    }
+}
