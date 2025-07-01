@@ -274,6 +274,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var missingMessagesCaller: ChatEndpointCaller<M, FetchMessagesResponse<M>>? = null
         private var messageAckCaller: ChatEndpointCaller<List<M>, ChatResponse>? = null
 
+        private var localStorageInstance: ILocalStorage<M>? = null
+
+        fun setStorageInterface(storage: ILocalStorage<M>): Builder<M> {
+            localStorageInstance = storage
+            return this
+        }
+
         fun <R: ChatResponse> setMessageAckCaller(caller: ChatEndpointCaller<List<M>, R>): Builder<M> {
             messageAckCaller = cast(caller)
             return this
@@ -316,6 +323,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 this.receivers = this@Builder.receivers
                 this.missingMessagesCaller = this@Builder.missingMessagesCaller
                 this.messageAckCaller = this@Builder.messageAckCaller
+                this.localStorageInstance = this@Builder.localStorageInstance
             }
         }
     }
