@@ -25,8 +25,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return socketState == SocketStates.CONNECTED
         }
 
-    private var missingMessagesCaller: ChatEndpointCaller<M, FetchMessagesResponse<M>>? = null
-    private var messageAckCaller: ChatEndpointCaller<List<M>, ChatResponse>? = null
+    private var missingMessagesCaller: ChatEndpointCaller<FetchMessagesResponse<M>>? = null
+    private var messageAckCaller: ChatEndpointCallerWithData<List<M>, ChatResponse>? = null
 
     private var socketURL: String? = null
     private var socketState: SocketStates? = null
@@ -68,7 +68,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private suspend fun fetchMissingMessages() {
         missingMessagesCaller?.call(
-            data = null, handler = object: ChatEndpointCaller.ResponseCallback<FetchMessagesResponse<M>> {
+            handler = object: ResponseCallback<FetchMessagesResponse<M>> {
             override fun onResponse(response: FetchMessagesResponse<M>) {
                 coroutineScope.runOnMainThread {
                     onMissingMessagesFetched(response)
@@ -85,7 +85,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private suspend fun acknowledgeMessages(messages: List<M>) {
-        messageAckCaller?.call(data = messages, handler = object: ChatEndpointCaller.ResponseCallback<ChatResponse> {
+        messageAckCaller?.call(data = messages, handler = object: ResponseCallback<ChatResponse> {
             override fun onResponse(response: ChatResponse) {
                 if (response._isSuccessful == true) {
                     ackMessages = mutableListOf()
@@ -271,8 +271,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var me: String? = null
         private var receivers: List<String> = listOf()
 
-        private var missingMessagesCaller: ChatEndpointCaller<M, FetchMessagesResponse<M>>? = null
-        private var messageAckCaller: ChatEndpointCaller<List<M>, ChatResponse>? = null
+        private var missingMessagesCaller: ChatEndpointCaller<FetchMessagesResponse<M>>? = null
+        private var messageAckCaller: ChatEndpointCallerWithData<List<M>, ChatResponse>? = null
 
         private var localStorageInstance: ILocalStorage<M>? = null
 
@@ -281,12 +281,12 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return this
         }
 
-        fun <R: ChatResponse> setMessageAckCaller(caller: ChatEndpointCaller<List<M>, R>): Builder<M> {
+        fun <R: ChatResponse> setMessageAckCaller(caller: ChatEndpointCallerWithData<List<M>, R>): Builder<M> {
             messageAckCaller = cast(caller)
             return this
         }
 
-        fun <R: FetchMessagesResponse<M>> setMissingMessagesCaller(caller: ChatEndpointCaller<M, R>): Builder<M> {
+        fun <R: FetchMessagesResponse<M>> setMissingMessagesCaller(caller: ChatEndpointCaller<R>): Builder<M> {
             missingMessagesCaller = cast(caller)
             return this
         }

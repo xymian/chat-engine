@@ -8,6 +8,8 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import utils.ChatEndpointCaller
+import utils.ChatEndpointCallerWithData
+import utils.ResponseCallback
 import java.io.IOException
 
 fun main() {
@@ -88,11 +90,11 @@ data class AckResponse(
     val error: String?,
 ): ChatResponse(data, isSuccessful, error)
 
-class GetMissingMessagesUserCase: ChatEndpointCaller<ChatMessage, ChatHistoryResponse> {
+class GetMissingMessagesUserCase: ChatEndpointCaller<ChatHistoryResponse> {
 
     private val client: OkHttpClient = OkHttpClient()
 
-    override suspend fun call(data: ChatMessage?, handler: ChatEndpointCaller.ResponseCallback<ChatHistoryResponse>) {
+    override suspend fun call(handler: ResponseCallback<ChatHistoryResponse>) {
         client.newCall(Request.Builder().url("").build())
             .enqueue(object: Callback {
                 override fun onFailure(call: Call, e: IOException) {
@@ -106,11 +108,11 @@ class GetMissingMessagesUserCase: ChatEndpointCaller<ChatMessage, ChatHistoryRes
     }
 }
 
-class AcknowledgeMessagesUseCase: ChatEndpointCaller<List<ChatMessage>, AckResponse> {
+class AcknowledgeMessagesUseCase: ChatEndpointCallerWithData<List<ChatMessage>, AckResponse> {
 
     private val client: OkHttpClient = OkHttpClient()
 
-    override suspend fun call(data: List<ChatMessage>?, handler: ChatEndpointCaller.ResponseCallback<AckResponse>) {
+    override suspend fun call(data: List<ChatMessage>?, handler: ResponseCallback<AckResponse>) {
         val mediaType = "application/json; charset=utf-8".toMediaType()
         data?.let { messages ->
             val sortedMessages = messages.sortedBy { it.timestamp }
