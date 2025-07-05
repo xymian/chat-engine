@@ -1,9 +1,9 @@
 package listeners
 
 import ChatServiceError
-import models.Message
+import models.ComparableMessage
 
-interface ChatServiceListener<M: Message> {
+interface ChatServiceListener<M: ComparableMessage> {
     fun onError(error: ChatServiceError, message: String)
     fun onSend(message: M)
     fun onReceive(message: M)

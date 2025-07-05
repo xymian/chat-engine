@@ -6,13 +6,13 @@ import kotlinx.coroutines.sync.Mutex
 import listeners.ChatServiceListener
 import models.ChatResponse
 import models.FetchMessagesResponse
-import models.Message
+import models.ComparableMessage
 import okhttp3.*
 import utils.*
 import java.lang.Exception
 import java.util.PriorityQueue
 
-class ChatServiceManager<M: Message>
+class ChatServiceManager<M: ComparableMessage>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
 
     private var receivedMessagesQueue = PriorityQueue<M>()
@@ -42,8 +42,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private val mutex = Mutex()
 
-    private var delay = 1_000L
-    private val maxDelay = 16_000L
+    private var delay = 1000L
+    private val maxDelay = 16000L
 
     private val coroutineScope = CoroutineScope(Dispatchers.Main) + SupervisorJob()
 
@@ -87,7 +87,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private suspend fun acknowledgeMessages(messages: List<M>) {
         messageAckCaller?.call(data = messages, handler = object: ResponseCallback<ChatResponse> {
             override fun onResponse(response: ChatResponse) {
-                if (response._isSuccessful == true) {
+                if (response.isSuccessful == true) {
                     ackMessages = mutableListOf()
                 }
                 coroutineScope.runInBackground {
@@ -108,7 +108,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     override fun sendMessage(message: M) {
-        if (message._sender == me) {
+        if (message.sender == me) {
             coroutineScope.runInBackground {
                 localStorageInstance?.store(message)
             }
@@ -131,8 +131,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun onMissingMessagesFetched(response: FetchMessagesResponse<M>) {
-        if (response._isSuccessful == true) {
-            response._data?.let { messages ->
+        if (response.isSuccessful == true) {
+            response.data?.let { messages ->
                 coroutineScope.runLockingTask(mutex) {
                     if (messages.isNotEmpty()) {
                         ackMessages.addAll(messages)
@@ -169,7 +169,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 }
             }
         } else {
-            Napier.e("server error: ${response._message}")
+            Napier.e("server error: ${response.message}")
         }
     }
 
@@ -215,7 +215,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val message = Json.decodeFromString(serializer, text)
-                if (isSenderPartOfThisChatAndIsntMe(message._sender)) {
+                if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
                     ackMessages.add(message)
                     coroutineScope.runInBackground {
                         localStorageInstance?.store(message)
@@ -242,9 +242,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                         }
                     }
                 } else {
-                    if (message._sender != me) {
+                    if (message.sender != me) {
                         chatServiceListener?.onError(
-                            ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message._sender}"
+                            ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message.sender}"
                         )
                         disconnect()
                     } else {
@@ -263,7 +263,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    class Builder<M: Message> {
+    class Builder<M: ComparableMessage> {
         private var socketURL: String? = null
 
         private var chatServiceListener: ChatServiceListener<M>? = null

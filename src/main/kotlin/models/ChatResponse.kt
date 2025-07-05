@@ -4,15 +4,15 @@ import kotlinx.serialization.Serializable
 
 
 @Serializable
-open class ChatResponse(
-    val _data: String?,
-    val _isSuccessful: Boolean?,
-    val _message: String?
-)
+abstract class ChatResponse {
+    abstract val data: String?
+    abstract val isSuccessful: Boolean?
+    abstract val message: String?
+}
 
 @Serializable
-open class FetchMessagesResponse<M: Message>(
-    val _data: List<M>?,
-    val _isSuccessful: Boolean?,
-    val _message: String?
-)
+abstract class FetchMessagesResponse<M: ComparableMessage> {
+    abstract val data: List<M>?
+    abstract val isSuccessful: Boolean?
+    abstract val message: String?
+}

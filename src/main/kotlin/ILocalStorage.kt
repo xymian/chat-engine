@@ -1,6 +1,6 @@
-import models.Message
+import models.ComparableMessage
 
-interface ILocalStorage<M: Message> {
+interface ILocalStorage<M: ComparableMessage> {
     suspend fun store(message: M)
     suspend fun store(messages: List<M>)
 }

@@ -1,9 +1,9 @@
 package utils
 
-import models.Message
+import models.ComparableMessage
 import java.util.PriorityQueue
 
-fun <M: Message> PriorityQueue<M>.emptyQueue(): List<M> {
+fun <M: ComparableMessage> PriorityQueue<M>.emptyQueue(): List<M> {
     val messages = mutableListOf<M>()
     while (isNotEmpty()) {
         messages.add(poll())
