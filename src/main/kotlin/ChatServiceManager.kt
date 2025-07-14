@@ -10,14 +10,13 @@ import models.ComparableMessage
 import okhttp3.*
 import utils.*
 import java.lang.Exception
-import java.util.PriorityQueue
 
 class ChatServiceManager<M: ComparableMessage>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
 
-    private var receivedMessagesQueue = PriorityQueue<M>()
-    private var sendMessagesQueue = PriorityQueue<M>()
-    private var ackMessages = mutableListOf<M>()
+    private var receivedMessagesQueue = mutableSetOf<M>()
+    private var sendMessagesQueue = mutableSetOf<M>()
+    private var ackMessages = mutableSetOf<M>()
 
     private var exposeSocketMessages = true
     private val socketIsConnected: Boolean
@@ -45,10 +44,14 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var delay = 1000L
     private val maxDelay = 16000L
 
-    private val coroutineScope = CoroutineScope(Dispatchers.Main) + SupervisorJob()
+    private val coroutineScope = CoroutineScope(Dispatchers.Default) + SupervisorJob()
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+    }
 
     override fun connect() {
-        CoroutineScope(Dispatchers.IO).launch {
+        coroutineScope.runInBackground {
             fetchMissingMessages()
         }
     }
@@ -56,13 +59,16 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun startSocket() {
         socketURL?.let {
             if (!socketIsConnected) {
-                socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
+                if (socket != null) {
+                    socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
+                }
             }
         }
     }
 
     override fun disconnect() {
         socket?.close(1000, "end session")
+        socket = null
         client.dispatcher.executorService.shutdown()
     }
 
@@ -77,37 +83,43 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
             override fun onFailure(e: Exception?) {
                 Napier.e("error: ${e?.message}")
-                chatServiceListener?.onError(
-                    ChatServiceError.ACKNOWLEDGE_FAILED, e?.message ?: ""
-                )
-            }
-        })
-    }
-
-    private suspend fun acknowledgeMessages(messages: List<M>) {
-        messageAckCaller?.call(data = messages, handler = object: ResponseCallback<ChatResponse> {
-            override fun onResponse(response: ChatResponse) {
-                if (response.isSuccessful == true) {
-                    ackMessages = mutableListOf()
-                }
-                coroutineScope.runInBackground {
-                    fetchMissingMessages()
-                }
-            }
-
-            override fun onFailure(e: Exception?) {
-                Napier.e("error: ${e?.message}")
-                chatServiceListener?.onError(
-                    ChatServiceError.ACKNOWLEDGE_FAILED, e?.message ?: ""
-                )
-                coroutineScope.runInBackground {
-                    fetchMissingMessages()
+                coroutineScope.runOnMainThread {
+                    chatServiceListener?.onError(
+                        ChatServiceError.FETCH_MISSING_MESSAGES_FAILED, e?.message ?: ""
+                    )
                 }
             }
         })
     }
 
-    override fun sendMessage(message: M) {
+    private suspend fun acknowledgeMessages(messages: List<M>, completion: () -> Unit) {
+        if (messages.isNotEmpty()) {
+            messageAckCaller?.call(data = messages, handler = object : ResponseCallback<ChatResponse> {
+                override fun onResponse(response: ChatResponse) {
+                    if (response.isSuccessful == true) {
+                        ackMessages = mutableSetOf()
+                    }
+
+                    coroutineScope.runOnMainThread {
+                        completion()
+                    }
+
+                }
+
+                override fun onFailure(e: Exception?) {
+                    Napier.e("error: ${e?.message}")
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onError(
+                            ChatServiceError.ACKNOWLEDGE_FAILED, e?.message ?: ""
+                        )
+                        completion()
+                    }
+                }
+            })
+        }
+    }
+
+    override suspend fun sendMessage(message: M) {
         if (message.sender == me) {
             coroutineScope.runInBackground {
                 localStorageInstance?.store(message)
@@ -118,13 +130,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         } else {
             if (socketIsConnected) {
                 if (sendMessagesQueue.isNotEmpty()) {
-                    sendMessagesQueue.emptyQueue().let {
+                    sendMessagesQueue.empty().let {
                         it.forEach { m ->
-                            socket?.send(Json.encodeToString(serializer, m))
+                            socket?.send(json.encodeToString(serializer, m))
                         }
                     }
                 } else {
-                    socket?.send(Json.encodeToString(serializer, message))
+                    socket?.send(json.encodeToString(serializer, message))
                 }
             }
         }
@@ -142,7 +154,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     localStorageInstance?.store(messages)
                 }
                 if (exposeSocketMessages) {
-                    chatServiceListener?.onReceive(messages)
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onReceive(messages)
+                    }
                 } else {
                     coroutineScope.runLockingTask(mutex) {
                         receivedMessagesQueue.addAll(messages)
@@ -154,7 +168,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 } else {
                     coroutineScope.runLockingTask(mutex) {
                         if (receivedMessagesQueue.isNotEmpty()) {
-                            receivedMessagesQueue.emptyQueue().let {
+                            receivedMessagesQueue.empty().let {
                                 coroutineScope.runOnMainThread {
                                     chatServiceListener?.onReceive(it)
                                 }
@@ -199,22 +213,40 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun webSocketListener(): WebSocketListener {
         return object : WebSocketListener() {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                coroutineScope.runInBackground {
+                    acknowledgeMessages(ackMessages.toList()) {
+                        coroutineScope.runInBackground {
+                            fetchMissingMessages()
+                        }
+                    }
+                }
                 socketState = SocketStates.CLOSED
                 exposeSocketMessages = false
+                coroutineScope.runOnMainThread {
+                    chatServiceListener?.onClose(code, reason)
+                }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {}
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 coroutineScope.runInBackground {
-                    acknowledgeMessages(ackMessages)
-                    socketState = SocketStates.FAILED
-                    exposeSocketMessages = false
+                    acknowledgeMessages(ackMessages.toList()) {
+                        coroutineScope.runInBackground {
+                            fetchMissingMessages()
+                        }
+                    }
+                }
+                socketState = SocketStates.FAILED
+                exposeSocketMessages = false
+                coroutineScope.runOnMainThread {
+                    chatServiceListener?.onDisconnect(t, response)
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                val message = Json.decodeFromString(serializer, text)
+                val message = json.decodeFromString(serializer, text)
+                println("sender: ${message.sender}")
                 if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
                     ackMessages.add(message)
                     coroutineScope.runInBackground {
@@ -225,7 +257,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                         coroutineScope.runLockingTask(mutex) {
                             receivedMessagesQueue.add(message)
                             if (receivedMessagesQueue.isNotEmpty()) {
-                                receivedMessagesQueue.emptyQueue().let {
+                                receivedMessagesQueue.empty().let {
                                     coroutineScope.runOnMainThread {
                                         chatServiceListener?.onReceive(it)
                                     }
@@ -243,19 +275,25 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     }
                 } else {
                     if (message.sender != me) {
-                        chatServiceListener?.onError(
-                            ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message.sender}"
-                        )
+                        coroutineScope.runOnMainThread {
+                            chatServiceListener?.onError(
+                                ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message.sender}"
+                            )
+                        }
                         disconnect()
                     } else {
-                        chatServiceListener?.onSend(message)
+                        coroutineScope.runOnMainThread {
+                            chatServiceListener?.onSend(message)
+                        }
                     }
                 }
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 socketState = SocketStates.CONNECTED
-                chatServiceListener?.onConnect()
+                coroutineScope.runOnMainThread {
+                    chatServiceListener?.onConnect()
+                }
                 coroutineScope.runInBackground {
                     fetchMissingMessages()
                 }
@@ -316,7 +354,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 socketURL = this@Builder.socketURL
                 chatServiceListener = this@Builder.chatServiceListener
                 socketURL?.let {
-                    socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
+                    socket = client.newWebSocket(
+                        Request.Builder().url(it).build(),
+                        webSocketListener()
+                    )
                     this.socketState = SocketStates.NOT_CONNECTED
                 }
                 this.me = this@Builder.me

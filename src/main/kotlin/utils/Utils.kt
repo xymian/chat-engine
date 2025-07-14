@@ -3,11 +3,10 @@ package utils
 import models.ComparableMessage
 import java.util.PriorityQueue
 
-fun <M: ComparableMessage> PriorityQueue<M>.emptyQueue(): List<M> {
+fun <M: ComparableMessage> MutableSet<M>.empty(): List<M> {
     val messages = mutableListOf<M>()
-    while (isNotEmpty()) {
-        messages.add(poll())
-    }
+    messages.addAll(this)
+    this.clear()
     return messages
 }
 

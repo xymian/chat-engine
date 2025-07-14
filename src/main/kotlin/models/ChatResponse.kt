@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 abstract class ChatResponse {
-    abstract val data: String?
+    abstract val data: Any?
     abstract val isSuccessful: Boolean?
     abstract val message: String?
 }

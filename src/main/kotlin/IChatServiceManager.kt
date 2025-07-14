@@ -3,5 +3,5 @@ import models.ComparableMessage
 interface IChatServiceManager<M: ComparableMessage> {
     fun connect()
     fun disconnect()
-    fun sendMessage(message: M)
+    suspend fun sendMessage(message: M)
 }
