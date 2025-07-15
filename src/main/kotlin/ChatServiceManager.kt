@@ -72,6 +72,11 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     override fun pause() {
         exportStatusController = MessageExportControllers.CLIENT
         exportMessages = false
+        coroutineScope.runInBackground {
+            acknowledgeMessages(ackMessages.toList()) {
+
+            }
+        }
     }
 
     override fun resume() {
