@@ -19,7 +19,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var ackMessages = mutableSetOf<M>()
 
     private var exportMessages = true
-    private var exportStatusController = MessageExportControllers.INTERNAL
+    private var preventMessageExportation: Boolean = false
     private val socketIsConnected: Boolean
         get() {
             return socketState == SocketStates.CONNECTED
@@ -70,7 +70,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     override fun pause() {
-        exportStatusController = MessageExportControllers.CLIENT
+        preventMessageExportation = true
         exportMessages = false
         coroutineScope.runInBackground {
             acknowledgeMessages(ackMessages.toList()) {
@@ -80,8 +80,14 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     override fun resume() {
-        exportStatusController = MessageExportControllers.INTERNAL
-        connect()
+        preventMessageExportation = false
+        coroutineScope.runInBackground {
+            acknowledgeMessages(ackMessages.toList()) {
+            }
+            fetchMissingMessages {
+                scheduleSocketReconnect()
+            }
+        }
     }
 
     override fun disconnect() {
@@ -163,23 +169,28 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun onMissingMessagesFetched(response: FetchMessagesResponse<M>, completion: () -> Unit) {
         if (response.isSuccessful == true) {
             response.data?.let { messages ->
-                coroutineScope.runLockingTask(mutex) {
-                    if (messages.isNotEmpty()) {
+                if (messages.isNotEmpty()) {
+                    coroutineScope.runLockingTask(mutex) {
                         ackMessages.addAll(messages)
                     }
-                }
-                coroutineScope.runInBackground {
-                    localStorageInstance?.store(messages)
-                }
+                    coroutineScope.runInBackground {
+                        localStorageInstance?.store(messages)
+                    }
 
-                if (!socketIsConnected) {
-                    handleMissingMessages(messages)
-                    setExportedStatusBasedOnExportController(false)
-                    completion()
+                    if (!socketIsConnected) {
+                        handleMissingMessages(messages)
+                        setExportedStatusIfNotPrevented(false)
+                        completion()
+                    } else {
+                        coroutineScope.runLockingTask(mutex) {
+                            setExportedStatusIfNotPrevented(true)
+                            handleMissingMessages(messages)
+                        }
+                    }
                 } else {
                     coroutineScope.runLockingTask(mutex) {
-                        setExportedStatusBasedOnExportController(true)
-                        handleMissingMessages(messages)
+                        setExportedStatusIfNotPrevented(true)
+                        handleMissingMessages(listOf())
                     }
                 }
             }
@@ -227,8 +238,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun setExportedStatusBasedOnExportController(value: Boolean) {
-        if (exportStatusController == MessageExportControllers.INTERNAL) {
+    private fun setExportedStatusIfNotPrevented(value: Boolean) {
+        if (!preventMessageExportation) {
             exportMessages = value
         }
     }
@@ -246,7 +257,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     }
                 }
                 socketState = SocketStates.CLOSED
-                setExportedStatusBasedOnExportController(false)
+                setExportedStatusIfNotPrevented(false)
                 coroutineScope.runOnMainThread {
                     chatServiceListener?.onClose(code, reason)
                 }
@@ -265,7 +276,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     }
                 }
                 socketState = SocketStates.FAILED
-                setExportedStatusBasedOnExportController(false)
+                setExportedStatusIfNotPrevented(false)
                 coroutineScope.runOnMainThread {
                     chatServiceListener?.onDisconnect(t, response)
                 }
@@ -273,7 +284,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val message = json.decodeFromString(serializer, text)
-                println("sender: ${message.sender}")
                 if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
                     ackMessages.add(message)
                     coroutineScope.runInBackground {
@@ -289,6 +299,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                         }
                         disconnect()
                     } else {
+                        coroutineScope.runInBackground {
+                            localStorageInstance?.store(message)
+                        }
                         coroutineScope.runOnMainThread {
                             chatServiceListener?.onSend(message)
                         }
