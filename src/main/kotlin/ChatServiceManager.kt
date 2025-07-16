@@ -87,9 +87,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    override fun disconnect() {
+    private fun disconnect() {
         socket?.close(1000, "end session")
-        socket = null
         client.dispatcher.executorService.shutdown()
     }
 
