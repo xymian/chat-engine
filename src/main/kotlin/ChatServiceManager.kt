@@ -54,7 +54,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     override fun connect() {
         coroutineScope.runInBackground {
             fetchMissingMessages {
-                scheduleSocketReconnect()
+                startSocket()
             }
         }
     }
@@ -62,9 +62,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun startSocket() {
         socketURL?.let {
             if (!socketIsConnected) {
-                if (socket != null) {
-                    socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
-                }
+                socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
             }
         }
     }
@@ -82,8 +80,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     override fun resume() {
         preventMessageExportation = false
         coroutineScope.runInBackground {
-            acknowledgeMessages(ackMessages.toList()) {
-            }
+            acknowledgeMessages(ackMessages.toList()) {}
             fetchMissingMessages {
                 scheduleSocketReconnect()
             }
@@ -100,7 +97,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         missingMessagesCaller?.call(
             handler = object: ResponseCallback<FetchMessagesResponse<M>> {
             override fun onResponse(response: FetchMessagesResponse<M>) {
-                coroutineScope.runOnMainThread {
+                coroutineScope.runInBackground {
                     onMissingMessagesFetched(response, completion)
                 }
             }
@@ -166,31 +163,25 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun onMissingMessagesFetched(response: FetchMessagesResponse<M>, completion: () -> Unit) {
+    private suspend fun onMissingMessagesFetched(response: FetchMessagesResponse<M>, completion: () -> Unit) {
         if (response.isSuccessful == true) {
             response.data?.let { messages ->
-                if (messages.isNotEmpty()) {
-                    coroutineScope.runLockingTask(mutex) {
-                        ackMessages.addAll(messages)
-                    }
-                    coroutineScope.runInBackground {
-                        localStorageInstance?.store(messages)
-                    }
+                coroutineScope.runLockingTask(mutex) {
+                    ackMessages.addAll(messages)
+                }
 
-                    if (!socketIsConnected) {
+                localStorageInstance?.store(messages)
+
+                if (!socketIsConnected) {
+                    coroutineScope.runLockingTask(mutex) {
                         handleMissingMessages(messages)
                         setExportedStatusIfNotPrevented(false)
-                        completion()
-                    } else {
-                        coroutineScope.runLockingTask(mutex) {
-                            setExportedStatusIfNotPrevented(true)
-                            handleMissingMessages(messages)
-                        }
                     }
+                    completion()
                 } else {
                     coroutineScope.runLockingTask(mutex) {
                         setExportedStatusIfNotPrevented(true)
-                        handleMissingMessages(listOf())
+                        handleMissingMessages(messages)
                     }
                 }
             }
@@ -212,7 +203,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 }
             } else {
                 coroutineScope.runOnMainThread {
-                    chatServiceListener?.onReceive(messages)
+                    if (messages.isNotEmpty()) {
+                        chatServiceListener?.onReceive(messages)
+                    }
                 }
             }
         } else {
@@ -375,18 +368,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return ChatServiceManager(serializer).apply {
                 socketURL = this@Builder.socketURL
                 chatServiceListener = this@Builder.chatServiceListener
-                socketURL?.let {
-                    socket = client.newWebSocket(
-                        Request.Builder().url(it).build(),
-                        webSocketListener()
-                    )
-                    this.socketState = SocketStates.NOT_CONNECTED
-                }
                 this.me = this@Builder.me
                 this.receivers = this@Builder.receivers
                 this.missingMessagesCaller = this@Builder.missingMessagesCaller
                 this.messageAckCaller = this@Builder.messageAckCaller
                 this.localStorageInstance = this@Builder.localStorageInstance
+
+                this.socketState = SocketStates.NOT_CONNECTED
             }
         }
     }
