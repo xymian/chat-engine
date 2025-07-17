@@ -87,7 +87,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun disconnect() {
+    override fun disconnect() {
         socket?.close(1000, "end session")
         client.dispatcher.executorService.shutdown()
     }
@@ -177,6 +177,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                         setExportedStatusIfNotPrevented(false)
                     }
                     completion()
+                    fetchMissingMessages {
+                        startSocket()
+                    }
                 } else {
                     coroutineScope.runLockingTask(mutex) {
                         setExportedStatusIfNotPrevented(true)
