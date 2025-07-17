@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 abstract class ComparableMessage(
 ): Comparable<ComparableMessage> {
-    abstract val timestamp: String
+    abstract var timestamp: String
     abstract val sender: String
     abstract val message: Any
 

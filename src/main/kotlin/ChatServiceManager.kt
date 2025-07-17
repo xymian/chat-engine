@@ -10,12 +10,13 @@ import models.ComparableMessage
 import okhttp3.*
 import utils.*
 import java.lang.Exception
+import java.util.*
 
 class ChatServiceManager<M: ComparableMessage>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
 
-    private var receivedMessagesSet = mutableSetOf<M>()
-    private var sendMessagesQueue = mutableSetOf<M>()
+    private var unexportedReceivedMessages = mutableSetOf<M>()
+    private var unsentMessages = mutableSetOf<M>()
     private var ackMessages = mutableSetOf<M>()
 
     private var exportMessages = true
@@ -33,6 +34,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private var me: String? = null
     private var receivers: List<String> = listOf()
+    private var timestampFormat: String? = null
 
     private var chatServiceListener: ChatServiceListener<M>? = null
 
@@ -144,20 +146,35 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             coroutineScope.runInBackground {
                 localStorageInstance?.store(message)
             }
-        }
-        if (socketState == SocketStates.NOT_CONNECTED || socketState == SocketStates.CLOSED) {
-            sendMessagesQueue.add(message)
         } else {
-            if (socketIsConnected) {
-                if (sendMessagesQueue.isNotEmpty()) {
-                    sendMessagesQueue.empty().let {
-                        it.forEach { m ->
-                            socket?.send(json.encodeToString(serializer, m))
+            throw Exception("sender has changed: not allowed")
+        }
+        sendPendingMessages()
+        tryToSendMessage(message.apply {
+            timestamp = Date().toISOString()
+        })
+    }
+
+    private fun tryToSendMessage(message: M) {
+        if (!socketIsConnected) {
+            unsentMessages.add(message)
+        } else {
+            socket?.send(json.encodeToString(serializer, message))
+        }
+    }
+
+    private fun sendPendingMessages() {
+        unsentMessages.empty().let {
+            it.forEach { m ->
+                tryToSendMessage(
+                    m.apply {
+                        if (timestampFormat == null) {
+                            m.timestamp = Date().toISOString()
+                        } else {
+                            m.timestamp = Date().toFormat(timestamp)
                         }
                     }
-                } else {
-                    socket?.send(json.encodeToString(serializer, message))
-                }
+                )
             }
         }
     }
@@ -194,10 +211,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private fun handleMissingMessages(messages: List<M>) {
         if (exportMessages) {
-            if (receivedMessagesSet.isNotEmpty()) {
+            if (unexportedReceivedMessages.isNotEmpty()) {
                 coroutineScope.runLockingTask(mutex) {
-                    receivedMessagesSet.addAll(messages)
-                    receivedMessagesSet.empty().let {
+                    unexportedReceivedMessages.addAll(messages)
+                    unexportedReceivedMessages.empty().let {
                         coroutineScope.runOnMainThread {
                             chatServiceListener?.onReceive(it)
                         }
@@ -212,7 +229,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             }
         } else {
             coroutineScope.runLockingTask(mutex) {
-                receivedMessagesSet.addAll(messages)
+                unexportedReceivedMessages.addAll(messages)
             }
         }
     }
@@ -314,6 +331,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                         scheduleSocketReconnect()
                     }
                 }
+                coroutineScope.runInBackground {
+                    sendPendingMessages()
+                }
             }
         }
     }
@@ -325,11 +345,17 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
         private var me: String? = null
         private var receivers: List<String> = listOf()
+        private var timestampFormat: String? = null
 
         private var missingMessagesCaller: ChatEndpointCaller<FetchMessagesResponse<M>>? = null
         private var messageAckCaller: ChatEndpointCallerWithData<List<M>, ChatResponse>? = null
 
         private var localStorageInstance: ILocalStorage<M>? = null
+
+        fun setTimestampFormat(pattern: String): Builder<M> {
+            timestampFormat = pattern
+            return this
+        }
 
         fun setStorageInterface(storage: ILocalStorage<M>): Builder<M> {
             localStorageInstance = storage
@@ -375,6 +401,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 this.missingMessagesCaller = this@Builder.missingMessagesCaller
                 this.messageAckCaller = this@Builder.messageAckCaller
                 this.localStorageInstance = this@Builder.localStorageInstance
+                this.timestampFormat = this@Builder.timestampFormat
 
                 this.socketState = SocketStates.NOT_CONNECTED
             }
