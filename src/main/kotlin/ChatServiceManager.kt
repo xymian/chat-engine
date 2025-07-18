@@ -46,7 +46,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var delay = 1000L
     private val maxDelay = 16000L
 
-    private val coroutineScope = CoroutineScope(Dispatchers.Default) + SupervisorJob()
+    private val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val json = Json {
         ignoreUnknownKeys = true
