@@ -1,5 +1,6 @@
 package utils
 
+import ChatServiceErrorResponse
 import java.lang.Exception
 
 interface ChatEndpointCaller<R> {
@@ -11,5 +12,5 @@ interface ChatEndpointCallerWithData<D, R> {
 
 interface ResponseCallback<T> {
     fun onResponse(response: T)
-    fun onFailure(e: Exception?)
+    fun onFailure(response: ChatServiceErrorResponse)
 }

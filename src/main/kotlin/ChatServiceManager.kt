@@ -10,7 +10,6 @@ import models.ComparableMessage
 import okhttp3.*
 import utils.*
 import java.lang.Exception
-import java.util.*
 
 class ChatServiceManager<M: ComparableMessage>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
@@ -101,15 +100,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 onMissingMessagesFetched(response, completion)
             }
 
-            override fun onFailure(e: Exception?) {
-                Napier.e("error: ${e?.message}")
-                coroutineScope.runOnMainThread {
-                    chatServiceListener?.onError(
-                        ChatServiceError.FETCH_MISSING_MESSAGES_FAILED, e?.message ?: ""
-                    )
+                override fun onFailure(response: ChatServiceErrorResponse) {
+                    Napier.e("error: ${response.exception?.message}")
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onError(response)
+                    }
                 }
-            }
-        })
+            })
     }
 
     private suspend fun acknowledgeMessages(messages: List<M>, completion: () -> Unit) {
@@ -126,12 +123,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
                 }
 
-                override fun onFailure(e: Exception?) {
-                    Napier.e("error: ${e?.message}")
+                override fun onFailure(response: ChatServiceErrorResponse) {
+                    Napier.e("error: ${response.exception?.message}")
                     coroutineScope.runOnMainThread {
-                        chatServiceListener?.onError(
-                            ChatServiceError.ACKNOWLEDGE_FAILED, e?.message ?: ""
-                        )
+                        chatServiceListener?.onError(response)
                         completion()
                     }
                 }
@@ -298,7 +293,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     if (message.sender != me) {
                         coroutineScope.runOnMainThread {
                             chatServiceListener?.onError(
-                                ChatServiceError.MESSAGE_LEAK_ERROR, "unknown message sender ${message.sender}"
+                                ChatServiceErrorResponse(
+                                    statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
+                                    "unknown message sender ${message.sender}"
+                                )
                             )
                         }
                         disconnect()
