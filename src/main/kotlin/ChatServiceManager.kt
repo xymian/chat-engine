@@ -84,7 +84,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         coroutineScope.runInBackground {
             acknowledgeMessages(ackMessages.toList()) {}
             fetchMissingMessages {
-                scheduleSocketReconnect()
+                startSocket()
             }
         }
     }
@@ -98,9 +98,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         missingMessagesCaller?.call(
             handler = object: ResponseCallback<FetchMessagesResponse<M>> {
             override fun onResponse(response: FetchMessagesResponse<M>) {
-                coroutineScope.runInBackground {
-                    onMissingMessagesFetched(response, completion)
-                }
+                onMissingMessagesFetched(response, completion)
             }
 
             override fun onFailure(e: Exception?) {
@@ -150,9 +148,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             throw Exception("sender has changed: not allowed")
         }
         sendPendingMessages()
-        tryToSendMessage(message.apply {
-            timestamp = Date().toISOString()
-        })
+        tryToSendMessage(message)
     }
 
     private fun tryToSendMessage(message: M) {
@@ -166,36 +162,32 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun sendPendingMessages() {
         unsentMessages.empty().let {
             it.forEach { m ->
-                tryToSendMessage(
-                    m.apply {
-                        if (timestampFormat == null) {
-                            m.timestamp = Date().toISOString()
-                        } else {
-                            m.timestamp = Date().toFormat(timestamp)
-                        }
-                    }
-                )
+                tryToSendMessage(m)
             }
         }
     }
 
-    private suspend fun onMissingMessagesFetched(response: FetchMessagesResponse<M>, completion: () -> Unit) {
+    private fun onMissingMessagesFetched(response: FetchMessagesResponse<M>, completion: () -> Unit) {
         if (response.isSuccessful == true) {
             response.data?.let { messages ->
                 coroutineScope.runLockingTask(mutex) {
                     ackMessages.addAll(messages)
                 }
-
-                localStorageInstance?.store(messages)
+                coroutineScope.runInBackground {
+                    localStorageInstance?.store(messages)
+                }
 
                 if (!socketIsConnected) {
                     coroutineScope.runLockingTask(mutex) {
+                        setExportedStatusIfNotPrevented(true)
                         handleMissingMessages(messages)
                         setExportedStatusIfNotPrevented(false)
                     }
                     completion()
-                    fetchMissingMessages {
-                        startSocket()
+                    coroutineScope.runInBackground {
+                        fetchMissingMessages {
+                            startSocket()
+                        }
                     }
                 } else {
                     coroutineScope.runLockingTask(mutex) {
@@ -263,7 +255,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     acknowledgeMessages(ackMessages.toList()) {
                         coroutineScope.runInBackground {
                             fetchMissingMessages {
-                                scheduleSocketReconnect()
+                                startSocket()
                             }
                         }
                     }
@@ -282,7 +274,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     acknowledgeMessages(ackMessages.toList()) {
                         coroutineScope.runInBackground {
                             fetchMissingMessages {
-                                scheduleSocketReconnect()
+                                startSocket()
                             }
                         }
                     }
@@ -325,11 +317,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 socketState = SocketStates.CONNECTED
                 coroutineScope.runOnMainThread {
                     chatServiceListener?.onConnect()
-                }
-                coroutineScope.runInBackground {
-                    fetchMissingMessages {
-                        scheduleSocketReconnect()
-                    }
                 }
                 coroutineScope.runInBackground {
                     sendPendingMessages()

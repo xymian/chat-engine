@@ -1,6 +1,7 @@
 package utils
 
 import models.ComparableMessage
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.*
 
@@ -19,11 +20,11 @@ inline fun <reified T> cast(instance: Any): T {
 fun Date.toISOString(): String {
     return DateTimeFormatter.ofPattern(
         "yyyy-MM-dd'T'HH:mm:ss'Z'"
-    ).format(this.toInstant())
+    ).withZone(ZoneId.systemDefault()).format(this.toInstant())
 }
 
 fun Date.toFormat(pattern: String): String {
     return DateTimeFormatter.ofPattern(
         pattern
-    ).format(this.toInstant())
+    ).withZone(ZoneId.systemDefault()).format(this.toInstant())
 }
