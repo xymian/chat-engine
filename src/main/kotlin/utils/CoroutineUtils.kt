@@ -6,7 +6,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.CoroutineContext
 
 fun CoroutineScope.runLockingTask(mutex: Mutex, lockingTask: suspend () -> Unit) {
-    launch(Dispatchers.Default) {
+    launch(Dispatchers.IO) {
         mutex.withLock {
             lockingTask()
         }
