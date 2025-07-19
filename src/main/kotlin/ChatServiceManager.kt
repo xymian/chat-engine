@@ -52,10 +52,17 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         ignoreUnknownKeys = true
     }
 
+    fun connectAndSend(messages: List<M>) {
+        unsentMessages.addAll(messages)
+        connect()
+    }
+
     override fun connect() {
-        coroutineScope.runInBackground {
-            fetchMissingMessages {
-                startSocket()
+        if (!socketIsConnected) {
+            coroutineScope.runInBackground {
+                fetchMissingMessages {
+                    startSocket()
+                }
             }
         }
     }
@@ -85,6 +92,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             fetchMissingMessages {
                 startSocket()
             }
+            sendPendingMessages()
         }
     }
 
@@ -114,6 +122,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             messageAckCaller?.call(data = messages, handler = object : ResponseCallback<ChatResponse> {
                 override fun onResponse(response: ChatResponse) {
                     if (response.isSuccessful == true) {
+                        chatServiceListener?.onRecipientMessagesAcknowledged(messages)
                         ackMessages = mutableSetOf()
                     }
 
@@ -305,7 +314,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                             localStorageInstance?.store(message)
                         }
                         coroutineScope.runOnMainThread {
-                            chatServiceListener?.onSend(message)
+                            chatServiceListener?.onSent(listOf(message))
                         }
                     }
                 }
@@ -342,8 +351,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return this
         }
 
-        fun setStorageInterface(storage: ILocalStorage<M>): Builder<M> {
-            localStorageInstance = storage
+        fun <N: ComparableMessage> setStorageInterface(storage: ILocalStorage<N>): Builder<M> {
+            localStorageInstance = cast(storage)
             return this
         }
 
