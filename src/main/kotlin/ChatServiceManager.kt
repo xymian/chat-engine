@@ -305,77 +305,18 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun webSocketListener(): WebSocketListener {
         return object : WebSocketListener() {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                coroutineScope.runInBackground {
-                    acknowledgeMessages {
-                        coroutineScope.runInBackground {
-                            fetchMissingMessages {
-                                startSocket()
-                            }
-                        }
-                    }
-                }
-                socketState = SocketStates.CLOSED
-                setExportedStatusIfNotPrevented(false)
-                coroutineScope.runOnMainThread {
-                    chatServiceListener?.onClose(code, reason)
-                }
+                onSocketClosed(code, reason)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {}
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                coroutineScope.runInBackground {
-                    acknowledgeMessages {
-                        coroutineScope.runInBackground {
-                            fetchMissingMessages {
-                                startSocket()
-                            }
-                        }
-                    }
-                }
-                socketState = SocketStates.FAILED
-                setExportedStatusIfNotPrevented(false)
-                coroutineScope.runOnMainThread {
-                    chatServiceListener?.onDisconnect(t, response)
-                }
+                onSocketFailure(t, response)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val message = json.decodeFromString(serializer, text)
-                if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
-                    ackMessages.add(message)
-                    coroutineScope.runInBackground {
-                        localStorageInstance?.store(message)
-                    }
-                    handleMissingMessages(listOf(message))
-                } else {
-                    when {
-                        message.receiver == "BACKEND" -> {
-                            coroutineScope.runInBackground {
-                               markMessagesAsDelivered(listOf(message))
-                            }
-                        }
-                        message.sender == me -> {
-                            coroutineScope.runInBackground {
-                                localStorageInstance?.store(message)
-                            }
-                            coroutineScope.runOnMainThread {
-                                chatServiceListener?.onSent(listOf(message))
-                            }
-                        }
-                        else -> {
-                            coroutineScope.runOnMainThread {
-                                chatServiceListener?.onError(
-                                    ChatServiceErrorResponse(
-                                        statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
-                                        "unknown message sender ${message.sender}"
-                                    )
-                                )
-                            }
-                            disconnect()
-                        }
-                    }
-                }
+                onSocketMessageReceived(message)
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -385,6 +326,79 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 }
                 coroutineScope.runInBackground {
                     sendPendingMessages()
+                }
+            }
+        }
+    }
+
+    private fun onSocketClosed(code: Int, reason: String) {
+        coroutineScope.runInBackground {
+            acknowledgeMessages {
+                coroutineScope.runInBackground {
+                    fetchMissingMessages {
+                        startSocket()
+                    }
+                }
+            }
+        }
+        socketState = SocketStates.CLOSED
+        setExportedStatusIfNotPrevented(false)
+        coroutineScope.runOnMainThread {
+            chatServiceListener?.onClose(code, reason)
+        }
+    }
+
+    private fun onSocketFailure(t: Throwable, response: Response?) {
+        coroutineScope.runInBackground {
+            acknowledgeMessages {
+                coroutineScope.runInBackground {
+                    fetchMissingMessages {
+                        startSocket()
+                    }
+                }
+            }
+        }
+        socketState = SocketStates.FAILED
+        setExportedStatusIfNotPrevented(false)
+        coroutineScope.runOnMainThread {
+            chatServiceListener?.onDisconnect(t, response)
+        }
+    }
+
+    private fun onSocketMessageReceived(message: M) {
+        if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
+            ackMessages.add(message)
+            coroutineScope.runInBackground {
+                localStorageInstance?.store(message)
+            }
+            handleMissingMessages(listOf(message))
+        } else {
+            when {
+                message.receiver == "BACKEND" -> {
+                    coroutineScope.runInBackground {
+                        markMessagesAsDelivered(listOf(message))
+                    }
+                }
+
+                message.sender == me -> {
+                    coroutineScope.runInBackground {
+                        localStorageInstance?.store(message)
+                    }
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onSent(listOf(message))
+                    }
+                }
+
+                else -> {
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onError(
+                            ChatServiceErrorResponse(
+                                statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
+                                "unknown message sender ${message.sender}"
+                            )
+                        )
+                    }
+                    disconnect()
                 }
             }
         }
