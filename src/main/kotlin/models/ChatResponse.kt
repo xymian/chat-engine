@@ -11,7 +11,7 @@ abstract class ChatResponse {
 }
 
 @Serializable
-abstract class FetchMessagesResponse<M: ComparableMessage> {
+abstract class MessagesResponse<M: ComparableMessage> {
     abstract val data: List<M>?
     abstract val isSuccessful: Boolean?
     abstract val message: String?

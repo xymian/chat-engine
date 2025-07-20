@@ -5,7 +5,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.coroutines.sync.Mutex
 import listeners.ChatServiceListener
 import models.ChatResponse
-import models.FetchMessagesResponse
+import models.MessagesResponse
 import models.ComparableMessage
 import okhttp3.*
 import utils.*
@@ -25,8 +25,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return socketState == SocketStates.CONNECTED
         }
 
-    private var missingMessagesCaller: ChatEndpointCaller<FetchMessagesResponse<M>>? = null
-    private var messageAckCaller: ChatEndpointCallerWithData<List<M>, ChatResponse>? = null
+    private var missingMessagesCaller: ChatEndpointCaller<MessagesResponse<M>>? = null
+    private var messageAckCaller: ChatEndpointCallerWithData<List<M>, MessagesResponse<M>>? = null
+    private var markAsDeliveredCaller: ChatEndpointCallerWithData<List<M>, MessagesResponse<M>>? = null
 
     private var socketURL: String? = null
     private var socketState: SocketStates? = null
@@ -106,10 +107,50 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         client.dispatcher.executorService.shutdown()
     }
 
+    override fun markMessagesAsRead(messages: List<M>) {
+        coroutineScope.runInBackground {
+            markAsDeliveredCaller?.call(data = messages, object: ResponseCallback<MessagesResponse<M>> {
+                override fun onResponse(response: MessagesResponse<M>) {
+                    response.data?.let { readMessages ->
+                        coroutineScope.runOnMainThread {
+                            chatServiceListener?.onRead(readMessages)
+                        }
+                    }
+                }
+
+                override fun onFailure(response: ChatServiceErrorResponse) {
+                    Napier.e("error: ${response.exception?.message}")
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onError(response)
+                    }
+                }
+            })
+        }
+    }
+
+    private suspend fun markMessagesAsDelivered(messages: List<M>) {
+        markAsDeliveredCaller?.call(data = messages, object: ResponseCallback<MessagesResponse<M>> {
+            override fun onResponse(response: MessagesResponse<M>) {
+                response.data?.let { deliveredMessages ->
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onDelivered(deliveredMessages)
+                    }
+                }
+            }
+
+            override fun onFailure(response: ChatServiceErrorResponse) {
+                Napier.e("error: ${response.exception?.message}")
+                coroutineScope.runOnMainThread {
+                    chatServiceListener?.onError(response)
+                }
+            }
+        })
+    }
+
     private suspend fun fetchMissingMessages(completion: () -> Unit) {
         missingMessagesCaller?.call(
-            handler = object: ResponseCallback<FetchMessagesResponse<M>> {
-            override fun onResponse(response: FetchMessagesResponse<M>) {
+            handler = object: ResponseCallback<MessagesResponse<M>> {
+            override fun onResponse(response: MessagesResponse<M>) {
                 onMissingMessagesFetched(response, completion)
             }
 
@@ -125,8 +166,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private suspend fun acknowledgeMessages(completion: () -> Unit) {
         val messages = ackMessages.toList()
         if (messages.isNotEmpty()) {
-            messageAckCaller?.call(data = messages, handler = object : ResponseCallback<ChatResponse> {
-                override fun onResponse(response: ChatResponse) {
+            messageAckCaller?.call(data = messages, handler = object : ResponseCallback<MessagesResponse<M>> {
+
+                override fun onResponse(response: MessagesResponse<M>) {
                     if (response.isSuccessful == true) {
                         chatServiceListener?.onRecipientMessagesAcknowledged(messages)
                         ackMessages = mutableSetOf()
@@ -135,7 +177,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     coroutineScope.runOnMainThread {
                         completion()
                     }
-
                 }
 
                 override fun onFailure(response: ChatServiceErrorResponse) {
@@ -149,7 +190,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    override suspend fun sendMessage(message: M) {
+    override fun sendMessage(message: M) {
         if (message.sender == me) {
             coroutineScope.runInBackground {
                 localStorageInstance?.store(message)
@@ -157,8 +198,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         } else {
             throw Exception("sender has changed: not allowed")
         }
-        sendPendingMessages()
-        tryToSendMessage(message)
+        coroutineScope.runInBackground {
+            sendPendingMessages()
+            tryToSendMessage(message)
+        }
     }
 
     private fun tryToSendMessage(message: M) {
@@ -177,7 +220,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun onMissingMessagesFetched(response: FetchMessagesResponse<M>, completion: () -> Unit) {
+    private fun onMissingMessagesFetched(response: MessagesResponse<M>, completion: () -> Unit) {
         if (response.isSuccessful == true) {
             response.data?.let { messages ->
                 coroutineScope.runLockingTask(mutex) {
@@ -306,22 +349,30 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     }
                     handleMissingMessages(listOf(message))
                 } else {
-                    if (message.sender != me) {
-                        coroutineScope.runOnMainThread {
-                            chatServiceListener?.onError(
-                                ChatServiceErrorResponse(
-                                    statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
-                                    "unknown message sender ${message.sender}"
+                    when {
+                        message.receiver == "BACKEND" -> {
+                            coroutineScope.runInBackground {
+                               markMessagesAsDelivered(listOf(message))
+                            }
+                        }
+                        message.sender == me -> {
+                            coroutineScope.runInBackground {
+                                localStorageInstance?.store(message)
+                            }
+                            coroutineScope.runOnMainThread {
+                                chatServiceListener?.onSent(listOf(message))
+                            }
+                        }
+                        else -> {
+                            coroutineScope.runOnMainThread {
+                                chatServiceListener?.onError(
+                                    ChatServiceErrorResponse(
+                                        statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
+                                        "unknown message sender ${message.sender}"
+                                    )
                                 )
-                            )
-                        }
-                        disconnect()
-                    } else {
-                        coroutineScope.runInBackground {
-                            localStorageInstance?.store(message)
-                        }
-                        coroutineScope.runOnMainThread {
-                            chatServiceListener?.onSent(listOf(message))
+                            }
+                            disconnect()
                         }
                     }
                 }
@@ -348,8 +399,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var receivers: List<String> = listOf()
         private var timestampFormat: String? = null
 
-        private var missingMessagesCaller: ChatEndpointCaller<FetchMessagesResponse<M>>? = null
-        private var messageAckCaller: ChatEndpointCallerWithData<List<M>, ChatResponse>? = null
+        private var missingMessagesCaller: ChatEndpointCaller<MessagesResponse<M>>? = null
+        private var messageAckCaller: ChatEndpointCallerWithData<List<M>, MessagesResponse<M>>? = null
+        private var markAsDeliveredCaller: ChatEndpointCallerWithData<List<M>, MessagesResponse<M>>? = null
 
         private var localStorageInstance: ILocalStorage<M>? = null
 
@@ -368,7 +420,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return this
         }
 
-        fun <R: FetchMessagesResponse<M>> setMissingMessagesCaller(caller: ChatEndpointCaller<R>): Builder<M> {
+        fun <R: MessagesResponse<M>> setMissingMessagesCaller(caller: ChatEndpointCaller<R>): Builder<M> {
             missingMessagesCaller = cast(caller)
             return this
         }
@@ -401,6 +453,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 this.receivers = this@Builder.receivers
                 this.missingMessagesCaller = this@Builder.missingMessagesCaller
                 this.messageAckCaller = this@Builder.messageAckCaller
+                this.markAsDeliveredCaller = this@Builder.markAsDeliveredCaller
                 this.localStorageInstance = this@Builder.localStorageInstance
                 this.timestampFormat = this@Builder.timestampFormat
 
