@@ -4,7 +4,6 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.sync.Mutex
 import listeners.ChatServiceListener
-import models.ChatResponse
 import models.MessagesResponse
 import models.ComparableMessage
 import okhttp3.*
@@ -429,7 +428,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return this
         }
 
-        fun <R: ChatResponse> setMessageAckCaller(caller: ChatEndpointCallerWithData<List<M>, R>): Builder<M> {
+        fun <R: MessagesResponse<M>> setMessageAckCaller(caller: ChatEndpointCallerWithData<List<M>, R>): Builder<M> {
             messageAckCaller = cast(caller)
             return this
         }
