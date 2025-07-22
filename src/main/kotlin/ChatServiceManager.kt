@@ -280,7 +280,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     val labeler = object: SocketMessageLabeler<M> {
                         override fun isSocketReturnableMessage(message: M) = false
 
-                        override fun getReturnMessageFromCurrent(message: M) = message
+                        override fun getReturnMessageFromCurrent(message: M, reason: ReturnMessageReason?) = message
 
                         override fun returnReason(message: M) = null
                     }
@@ -339,7 +339,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageLabeler<M>) {
         if (messageLabeler.isSocketReturnableMessage(message)) {
             if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
-                socket?.send(json.encodeToString(serializer, messageLabeler.getReturnMessageFromCurrent(message)))
+                socket?.send(json.encodeToString(
+                    serializer,
+                    messageLabeler.getReturnMessageFromCurrent(message, messageLabeler.returnReason(message)))
+                )
                 ackMessages.add(message)
                 coroutineScope.runInBackground {
                     localStorageInstance?.store(message)
@@ -379,6 +382,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var socketURL: String? = null
 
         private var chatServiceListener: ChatServiceListener<M>? = null
+        private var socketMessageLabeler: SocketMessageLabeler<M>? = null
 
         private var me: String? = null
         private var receivers: List<String> = listOf()
@@ -389,6 +393,11 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var markAsDeliveredCaller: ChatEndpointCallerWithData<List<M>, MessagesResponse<M>>? = null
 
         private var localStorageInstance: ILocalStorage<M>? = null
+
+        fun setMessageLabeler(labeler: SocketMessageLabeler<M>): Builder<M> {
+            socketMessageLabeler = labeler
+            return this
+        }
 
         fun setTimestampFormat(pattern: String): Builder<M> {
             timestampFormat = pattern
@@ -441,7 +450,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 this.markAsDeliveredCaller = this@Builder.markAsDeliveredCaller
                 this.localStorageInstance = this@Builder.localStorageInstance
                 this.timestampFormat = this@Builder.timestampFormat
-
+                this.socketMessageLabeler = this@Builder.socketMessageLabeler
                 this.socketState = SocketStates.NOT_CONNECTED
             }
         }
