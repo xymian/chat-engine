@@ -6,5 +6,4 @@ interface IChatServiceManager<M: ComparableMessage> {
     fun connect()
     fun disconnect()
     fun sendMessage(message: M)
-    fun markMessagesAsRead(messages: List<M>)
 }

@@ -36,6 +36,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var timestampFormat: String? = null
 
     private var chatServiceListener: ChatServiceListener<M>? = null
+    private var socketMessageLabeler: SocketMessageLabeler<M>? = null
 
     private val client = OkHttpClient()
     private var socket: WebSocket? = null
@@ -104,46 +105,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     override fun disconnect() {
         socket?.close(1000, "end session")
         client.dispatcher.executorService.shutdown()
-    }
-
-    override fun markMessagesAsRead(messages: List<M>) {
-        coroutineScope.runInBackground {
-            markAsDeliveredCaller?.call(data = messages, object: ResponseCallback<MessagesResponse<M>> {
-                override fun onResponse(response: MessagesResponse<M>) {
-                    response.data?.let { readMessages ->
-                        coroutineScope.runOnMainThread {
-                            chatServiceListener?.onRead(readMessages)
-                        }
-                    }
-                }
-
-                override fun onFailure(response: ChatServiceErrorResponse) {
-                    Napier.e("error: ${response.exception?.message}")
-                    coroutineScope.runOnMainThread {
-                        chatServiceListener?.onError(response)
-                    }
-                }
-            })
-        }
-    }
-
-    private suspend fun markMessagesAsDelivered(messages: List<M>) {
-        markAsDeliveredCaller?.call(data = messages, object: ResponseCallback<MessagesResponse<M>> {
-            override fun onResponse(response: MessagesResponse<M>) {
-                response.data?.let { deliveredMessages ->
-                    coroutineScope.runOnMainThread {
-                        chatServiceListener?.onDelivered(deliveredMessages)
-                    }
-                }
-            }
-
-            override fun onFailure(response: ChatServiceErrorResponse) {
-                Napier.e("error: ${response.exception?.message}")
-                coroutineScope.runOnMainThread {
-                    chatServiceListener?.onError(response)
-                }
-            }
-        })
     }
 
     private suspend fun fetchMissingMessages(completion: () -> Unit) {
@@ -315,7 +276,18 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val message = json.decodeFromString(serializer, text)
-                onSocketMessageReceived(message)
+                val messageLabeler = if (socketMessageLabeler == null) {
+                    val labeler = object: SocketMessageLabeler<M> {
+                        override fun isSocketReturnableMessage(message: M) = false
+
+                        override fun getReturnMessageFromCurrent(message: M) = message
+
+                        override fun returnReason(message: M) = null
+                    }
+                    labeler
+                } else socketMessageLabeler!!
+
+                onSocketMessageReceived(message, messageLabeler)
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -364,41 +336,41 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun onSocketMessageReceived(message: M) {
-        if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
-            ackMessages.add(message)
-            coroutineScope.runInBackground {
-                localStorageInstance?.store(message)
-            }
-            handleMissingMessages(listOf(message))
-        } else {
-            when {
-                message.receiver == "BACKEND" -> {
-                    coroutineScope.runInBackground {
-                        markMessagesAsDelivered(listOf(message))
-                    }
+    private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageLabeler<M>) {
+        if (messageLabeler.isSocketReturnableMessage(message)) {
+            if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
+                socket?.send(json.encodeToString(serializer, messageLabeler.getReturnMessageFromCurrent(message)))
+                ackMessages.add(message)
+                coroutineScope.runInBackground {
+                    localStorageInstance?.store(message)
                 }
-
-                message.sender == me -> {
-                    coroutineScope.runInBackground {
-                        localStorageInstance?.store(message)
+                handleMissingMessages(listOf(message))
+            } else {
+                when (message.sender) {
+                    me -> {
+                        coroutineScope.runInBackground {
+                            localStorageInstance?.store(message)
+                        }
+                        coroutineScope.runOnMainThread {
+                            chatServiceListener?.onSent(listOf(message))
+                        }
                     }
-                    coroutineScope.runOnMainThread {
-                        chatServiceListener?.onSent(listOf(message))
-                    }
-                }
-
-                else -> {
-                    coroutineScope.runOnMainThread {
-                        chatServiceListener?.onError(
-                            ChatServiceErrorResponse(
-                                statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
-                                "unknown message sender ${message.sender}"
+                    else -> {
+                        coroutineScope.runOnMainThread {
+                            chatServiceListener?.onError(
+                                ChatServiceErrorResponse(
+                                    statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
+                                    "unknown message sender ${message.sender}"
+                                )
                             )
-                        )
+                        }
+                        disconnect()
                     }
-                    disconnect()
                 }
+            }
+        } else {
+            coroutineScope.runInBackground {
+                chatServiceListener?.onMessageReturned(message, messageLabeler.returnReason(message))
             }
         }
     }
