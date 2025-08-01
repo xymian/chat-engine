@@ -337,8 +337,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageLabeler<M>) {
-        if (messageLabeler.isSocketReturnableMessage(message)) {
-            if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
+        if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
+            handleMissingMessages(listOf(message))
+            if (messageLabeler.isSocketReturnableMessage(message)) {
                 socket?.send(json.encodeToString(
                     serializer,
                     messageLabeler.getReturnMessageFromCurrent(message, messageLabeler.returnReason(message)))
@@ -347,33 +348,32 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 coroutineScope.runInBackground {
                     localStorageInstance?.store(message)
                 }
-                handleMissingMessages(listOf(message))
             } else {
-                when (message.sender) {
-                    me -> {
-                        coroutineScope.runInBackground {
-                            localStorageInstance?.store(message)
-                        }
-                        coroutineScope.runOnMainThread {
-                            chatServiceListener?.onSent(listOf(message))
-                        }
-                    }
-                    else -> {
-                        coroutineScope.runOnMainThread {
-                            chatServiceListener?.onError(
-                                ChatServiceErrorResponse(
-                                    statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
-                                    "unknown message sender ${message.sender}"
-                                )
-                            )
-                        }
-                        disconnect()
-                    }
+                coroutineScope.runInBackground {
+                    chatServiceListener?.onMessageReturned(message, messageLabeler.returnReason(message))
                 }
             }
         } else {
-            coroutineScope.runInBackground {
-                chatServiceListener?.onMessageReturned(message, messageLabeler.returnReason(message))
+            when (message.sender) {
+                me -> {
+                    coroutineScope.runInBackground {
+                        localStorageInstance?.store(message)
+                    }
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onSent(message)
+                    }
+                }
+                else -> {
+                    coroutineScope.runOnMainThread {
+                        chatServiceListener?.onError(
+                            ChatServiceErrorResponse(
+                                statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
+                                "unknown message sender ${message.sender}"
+                            )
+                        )
+                    }
+                    disconnect()
+                }
             }
         }
     }
