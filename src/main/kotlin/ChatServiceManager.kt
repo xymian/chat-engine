@@ -278,11 +278,12 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 val message = json.decodeFromString(serializer, text)
                 val messageLabeler = if (socketMessageLabeler == null) {
                     val labeler = object: SocketMessageLabeler<M> {
-                        override fun isSocketReturnableMessage(message: M) = false
+                        override fun isReturnableSocketMessage(message: M) = false
 
                         override fun getReturnMessageFromCurrent(message: M, reason: ReturnMessageReason?) = message
 
                         override fun returnReason(message: M) = null
+                        override fun updateReason(message: M) = null
                     }
                     labeler
                 } else socketMessageLabeler!!
@@ -336,22 +337,28 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
+    private val returnedMessages = mutableListOf<M>()
+    private val sentForReturnMessages = mutableListOf<M>()
     private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageLabeler<M>) {
+        val alreadyProcessedMessage = returnedMessages.find { it.timestamp == message.timestamp }
+        if (alreadyProcessedMessage != null) {
+            returnedMessages.remove(alreadyProcessedMessage)
+            coroutineScope.runInBackground {
+                localStorageInstance?.store(message)
+            }
+            return
+        }
         if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
             handleMissingMessages(listOf(message))
-            if (messageLabeler.isSocketReturnableMessage(message)) {
-                socket?.send(json.encodeToString(
-                    serializer,
-                    messageLabeler.getReturnMessageFromCurrent(message, messageLabeler.returnReason(message)))
-                )
+            if (messageLabeler.isReturnableSocketMessage(message)) {
                 ackMessages.add(message)
                 coroutineScope.runInBackground {
                     localStorageInstance?.store(message)
                 }
-            } else {
-                coroutineScope.runInBackground {
-                    chatServiceListener?.onMessageReturned(message, messageLabeler.returnReason(message))
-                }
+                val returnMessage = messageLabeler.getReturnMessageFromCurrent(message, messageLabeler.returnReason(message))
+                returnedMessages.add(returnMessage)
+                chatServiceListener?.returnMessage(returnMessage)
+                socket?.send(json.encodeToString(serializer, returnMessage))
             }
         } else {
             when (message.sender) {
@@ -359,8 +366,15 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     coroutineScope.runInBackground {
                         localStorageInstance?.store(message)
                     }
+                    val sentMessage = sentForReturnMessages.find { it.timestamp == message.timestamp }
                     coroutineScope.runOnMainThread {
-                        chatServiceListener?.onSent(message)
+                        if (sentMessage != null) {
+                            sentForReturnMessages.remove(sentMessage)
+                            chatServiceListener?.onMessageReturned(message, messageLabeler.updateReason(message))
+                        } else {
+                            sentForReturnMessages.add(message)
+                            chatServiceListener?.onSent(message)
+                        }
                     }
                 }
                 else -> {

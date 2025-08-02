@@ -6,6 +6,7 @@ import models.ComparableMessage
 import okhttp3.Response
 
 interface ChatServiceListener<M: ComparableMessage> {
+    fun returnMessage(message: M)
     fun onMessageReturned(m: M, reason: ReturnMessageReason?)
     fun onRecipientMessagesAcknowledged(messages: List<M>)
     fun onClose(code: Int, reason: String)
