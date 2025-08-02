@@ -7,7 +7,6 @@ import okhttp3.Response
 
 interface ChatServiceListener<M: ComparableMessage> {
     fun returnMessage(message: M)
-    fun onMessageReturned(m: M, reason: ReturnMessageReason?)
     fun onRecipientMessagesAcknowledged(messages: List<M>)
     fun onClose(code: Int, reason: String)
     fun onError(response: ChatServiceErrorResponse)

@@ -283,7 +283,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                         override fun getReturnMessageFromCurrent(message: M, reason: ReturnMessageReason?) = message
 
                         override fun returnReason(message: M) = null
-                        override fun updateReason(message: M) = null
                     }
                     labeler
                 } else socketMessageLabeler!!
@@ -338,17 +337,16 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private val returnedMessages = mutableListOf<M>()
-    private val sentForReturnMessages = mutableListOf<M>()
     private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageLabeler<M>) {
-        val alreadyProcessedMessage = returnedMessages.find { it.timestamp == message.timestamp }
-        if (alreadyProcessedMessage != null) {
-            returnedMessages.remove(alreadyProcessedMessage)
-            coroutineScope.runInBackground {
-                localStorageInstance?.store(message)
-            }
-            return
-        }
         if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
+            val alreadyProcessedMessage = returnedMessages.find { it.timestamp == message.timestamp }
+            if (alreadyProcessedMessage != null) {
+                returnedMessages.remove(alreadyProcessedMessage)
+                coroutineScope.runInBackground {
+                    localStorageInstance?.store(message)
+                }
+                return
+            }
             handleMissingMessages(listOf(message))
             if (messageLabeler.isReturnableSocketMessage(message)) {
                 ackMessages.add(message)
@@ -366,15 +364,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                     coroutineScope.runInBackground {
                         localStorageInstance?.store(message)
                     }
-                    val sentMessage = sentForReturnMessages.find { it.timestamp == message.timestamp }
                     coroutineScope.runOnMainThread {
-                        if (sentMessage != null) {
-                            sentForReturnMessages.remove(sentMessage)
-                            chatServiceListener?.onMessageReturned(message, messageLabeler.updateReason(message))
-                        } else {
-                            sentForReturnMessages.add(message)
-                            chatServiceListener?.onSent(message)
-                        }
+                        chatServiceListener?.onSent(message)
                     }
                 }
                 else -> {
