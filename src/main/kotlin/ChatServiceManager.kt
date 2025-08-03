@@ -173,6 +173,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun sendPendingMessages() {
+        unsentMessages.addAll(returnableMissingMessages.empty())
         unsentMessages.empty().let {
             it.forEach { m ->
                 tryToSendMessage(m)
@@ -180,10 +181,15 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
+    private val returnableMissingMessages = mutableSetOf<M>()
+
     private fun onMissingMessagesFetched(response: MessagesResponse<M>, completion: () -> Unit) {
         if (response.isSuccessful == true) {
             response.data?.let { messages ->
                 coroutineScope.runLockingTask(mutex) {
+                    chatServiceListener?.let {
+                        returnableMissingMessages.addAll(it.onReturnMissingMessages(messages))
+                    }
                     ackMessages.addAll(messages)
                     coroutineScope.runInBackground {
                         localStorageInstance?.store(messages)
@@ -339,6 +345,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private val returnedMessages = mutableListOf<M>()
     private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageLabeler<M>) {
         if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
+            ackMessages.add(message)
+            coroutineScope.runInBackground {
+                localStorageInstance?.store(message)
+            }
             val alreadyProcessedMessage = returnedMessages.find { it.timestamp == message.timestamp }
             if (alreadyProcessedMessage != null) {
                 returnedMessages.remove(alreadyProcessedMessage)
@@ -349,10 +359,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             }
             handleMissingMessages(listOf(message))
             if (messageLabeler.isReturnableSocketMessage(message)) {
-                ackMessages.add(message)
-                coroutineScope.runInBackground {
-                    localStorageInstance?.store(message)
-                }
                 val returnMessage = messageLabeler.getReturnMessageFromCurrent(message, messageLabeler.returnReason(message))
                 returnedMessages.add(returnMessage)
                 chatServiceListener?.returnMessage(returnMessage)
