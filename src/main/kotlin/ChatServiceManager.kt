@@ -65,10 +65,22 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
+    private fun scheduleServiceConnect() {
+        if (!socketIsConnected) {
+            coroutineScope.runInBackground {
+                fetchMissingMessages {
+                    scheduleSocketReconnect()
+                }
+            }
+        }
+    }
+
     private fun startSocket() {
-        socketURL?.let {
-            if (!socketIsConnected) {
-                socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
+        if (!socketIsConnected) {
+            socketURL?.let {
+                if (!socketIsConnected) {
+                    socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
+                }
             }
         }
     }
@@ -266,33 +278,21 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun onSocketClosed(code: Int, reason: String) {
-        coroutineScope.runInBackground {
-            coroutineScope.runInBackground {
-                fetchMissingMessages {
-                    startSocket()
-                }
-            }
-        }
         socketState = SocketStates.CLOSED
         setExportedStatusIfNotPrevented(false)
         coroutineScope.runOnMainThread {
             chatServiceListener?.onClose(code, reason)
         }
+        scheduleServiceConnect()
     }
 
     private fun onSocketFailure(t: Throwable, response: Response?) {
-        coroutineScope.runInBackground {
-            coroutineScope.runInBackground {
-                fetchMissingMessages {
-                    startSocket()
-                }
-            }
-        }
         socketState = SocketStates.FAILED
         setExportedStatusIfNotPrevented(false)
         coroutineScope.runOnMainThread {
             chatServiceListener?.onDisconnect(t, response)
         }
+        scheduleServiceConnect()
     }
 
     private val returnedMessages = mutableListOf<M>()
@@ -313,7 +313,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             if (messageLabeler.isReturnableSocketMessage(message)) {
                 val returnMessage = messageLabeler.getReturnMessageFromCurrent(message, messageLabeler.returnReason(message))
                 returnedMessages.add(returnMessage)
-                chatServiceListener?.returnMessage(returnMessage)
+                chatServiceListener?.returnMessage(returnMessage, exportMessages)
                 socket?.send(json.encodeToString(serializer, returnMessage))
             }
         } else {
@@ -352,7 +352,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var timestampFormat: String? = null
 
         private var missingMessagesCaller: ChatEndpointCaller<MessagesResponse<M>>? = null
-        private var messageAckCaller: ChatEndpointCallerWithData<List<M>, MessagesResponse<M>>? = null
 
         private var localStorageInstance: ILocalStorage<M>? = null
 
