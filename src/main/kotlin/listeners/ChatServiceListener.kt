@@ -1,7 +1,6 @@
 package listeners
 
 import ChatServiceErrorResponse
-import ReturnMessageReason
 import models.ComparableMessage
 import okhttp3.Response
 

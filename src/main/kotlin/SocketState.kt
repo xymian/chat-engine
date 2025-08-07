@@ -1,3 +1,3 @@
-enum class SocketStates {
+enum class SocketState {
     CONNECTING, CONNECTED, CLOSED, FAILED, NOT_CONNECTED
 }

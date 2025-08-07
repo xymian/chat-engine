@@ -16,24 +16,29 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var unexportedReceivedMessages = mutableSetOf<M>()
     private var unsentMessages = mutableSetOf<M>()
 
-    private var exportMessages = true
+    private var shouldExportMessages = true
     private var preventMessageExportation: Boolean = false
     val socketIsConnected: Boolean
         get() {
-            return socketState == SocketStates.CONNECTED
+            return socketState == SocketState.CONNECTED
         }
 
     private var missingMessagesCaller: ChatEndpointCaller<MessagesResponse<M>>? = null
 
     private var socketURL: String? = null
-    private var socketState: SocketStates? = null
+    private var socketState: SocketState? = null
 
     private var me: String? = null
     private var receivers: List<String> = listOf()
     private var timestampFormat: String? = null
 
     private var chatServiceListener: ChatServiceListener<M>? = null
-    private var socketMessageLabeler: SocketMessageLabeler<M>? = null
+    private var socketMessageReturner: SocketMessageReturner<M> = object: SocketMessageReturner<M> {
+
+        override fun isReturnableSocketMessage(message: M) = false
+
+        override fun returnMessage(message: M) = message
+    }
 
     private val client = OkHttpClient()
     private var socket: WebSocket? = null
@@ -87,7 +92,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     override fun pause() {
         preventMessageExportation = true
-        exportMessages = false
+        shouldExportMessages = false
     }
 
     override fun resume() {
@@ -193,7 +198,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun handleMissingMessages(newMessages: List<M>) {
-        if (exportMessages) {
+        if (shouldExportMessages) {
             if (unexportedReceivedMessages.isNotEmpty()) {
                 coroutineScope.runLockingTask(mutex) {
                     unexportedReceivedMessages.addAll(newMessages)
@@ -219,9 +224,11 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private fun scheduleSocketReconnect() {
         coroutineScope.runInBackground {
-            delay(delay)
-            delay = (delay * 2).coerceAtMost(maxDelay)
-            startSocket()
+            if (delay < maxDelay) {
+                delay(delay)
+                delay = (delay * 2)
+                startSocket()
+            }
         }
     }
 
@@ -235,7 +242,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private fun setExportedStatusIfNotPrevented(value: Boolean) {
         if (!preventMessageExportation) {
-            exportMessages = value
+            shouldExportMessages = value
         }
     }
 
@@ -252,23 +259,11 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                val message = json.decodeFromString(serializer, text)
-                val messageLabeler = if (socketMessageLabeler == null) {
-                    val labeler = object: SocketMessageLabeler<M> {
-                        override fun isReturnableSocketMessage(message: M) = false
-
-                        override fun getReturnMessageFromCurrent(message: M, reason: ReturnMessageReason?) = message
-
-                        override fun returnReason(message: M) = null
-                    }
-                    labeler
-                } else socketMessageLabeler!!
-
-                onSocketMessageReceived(message, messageLabeler)
+                onSocketMessageReceived(json.decodeFromString(serializer, text), socketMessageReturner)
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                socketState = SocketStates.CONNECTED
+                socketState = SocketState.CONNECTED
                 coroutineScope.runOnMainThread {
                     chatServiceListener?.onConnect()
                 }
@@ -278,7 +273,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun onSocketClosed(code: Int, reason: String) {
-        socketState = SocketStates.CLOSED
+        socketState = SocketState.CLOSED
         setExportedStatusIfNotPrevented(false)
         coroutineScope.runOnMainThread {
             chatServiceListener?.onClose(code, reason)
@@ -287,7 +282,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun onSocketFailure(t: Throwable, response: Response?) {
-        socketState = SocketStates.FAILED
+        socketState = SocketState.FAILED
         setExportedStatusIfNotPrevented(false)
         coroutineScope.runOnMainThread {
             chatServiceListener?.onDisconnect(t, response)
@@ -296,14 +291,14 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private val returnedMessages = mutableListOf<M>()
-    private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageLabeler<M>) {
+    private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageReturner<M>) {
         if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
             coroutineScope.runInBackground {
                 localStorageInstance?.store(message)
             }
-            val alreadyProcessedMessage = returnedMessages.find { it.timestamp == message.timestamp }
-            if (alreadyProcessedMessage != null) {
-                returnedMessages.remove(alreadyProcessedMessage)
+            val alreadyReturnedMessage = returnedMessages.find { it.timestamp == message.timestamp }
+            if (alreadyReturnedMessage != null) {
+                returnedMessages.remove(alreadyReturnedMessage)
                 coroutineScope.runInBackground {
                     localStorageInstance?.store(message)
                 }
@@ -311,9 +306,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             }
             handleMissingMessages(listOf(message))
             if (messageLabeler.isReturnableSocketMessage(message)) {
-                val returnMessage = messageLabeler.getReturnMessageFromCurrent(message, messageLabeler.returnReason(message))
+                val returnMessage = messageLabeler.returnMessage(message)
                 returnedMessages.add(returnMessage)
-                chatServiceListener?.returnMessage(returnMessage, exportMessages)
+                chatServiceListener?.returnMessage(returnMessage, shouldExportMessages)
                 socket?.send(json.encodeToString(serializer, returnMessage))
             }
         } else {
@@ -345,7 +340,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var socketURL: String? = null
 
         private var chatServiceListener: ChatServiceListener<M>? = null
-        private var socketMessageLabeler: SocketMessageLabeler<M>? = null
+        private var socketMessageReturner: SocketMessageReturner<M>? = null
 
         private var me: String? = null
         private var receivers: List<String> = listOf()
@@ -355,8 +350,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
         private var localStorageInstance: ILocalStorage<M>? = null
 
-        fun setMessageLabeler(labeler: SocketMessageLabeler<M>): Builder<M> {
-            socketMessageLabeler = labeler
+        fun setMessageLabeler(labeler: SocketMessageReturner<M>): Builder<M> {
+            socketMessageReturner = labeler
             return this
         }
 
@@ -404,8 +399,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 this.missingMessagesCaller = this@Builder.missingMessagesCaller
                 this.localStorageInstance = this@Builder.localStorageInstance
                 this.timestampFormat = this@Builder.timestampFormat
-                this.socketMessageLabeler = this@Builder.socketMessageLabeler
-                this.socketState = SocketStates.NOT_CONNECTED
+                this@Builder.socketMessageReturner?.let {
+                    this.socketMessageReturner = it
+                }
+                this.socketState = SocketState.NOT_CONNECTED
             }
         }
     }
