@@ -11,10 +11,7 @@ import java.lang.Exception
 class ChatServiceManager<M: ComparableMessage>
 private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
 
-    private var unexportedReceivedMessages = mutableSetOf<M>()
     private var unsentMessages = mutableSetOf<M>()
-
-    private var shouldExportMessages = true
     val socketIsConnected: Boolean
         get() {
             return socketState == SocketState.CONNECTED
@@ -38,8 +35,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private val client = OkHttpClient()
     private var socket: WebSocket? = null
     private var localStorageInstance: ILocalStorage<M>? = null
-
-    private val mutex = Mutex()
 
     private var delay = 1000L
     private val maxDelay = 16000L
@@ -81,25 +76,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    override fun pause() {
-        shouldExportMessages = false
-    }
-
-    override fun resume() {
-        if (socketIsConnected) {
-            coroutineScope.runLockingTask(mutex) {
-                shouldExportMessages = true
-                handleMissingMessages(listOf()) {}
-            }
-        } else {
-            shouldExportMessages = false
-            connect()
-            coroutineScope.runInBackground {
-                sendPendingMessagesFirst(listOf())
-            }
-        }
-    }
-
     override fun disconnect() {
         socket?.close(1000, "end session")
         client.dispatcher.executorService.shutdown()
@@ -135,22 +111,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun handleMissingMessages(newMessages: List<M>, completion: () -> Unit) {
-        if (shouldExportMessages) {
-            if (unexportedReceivedMessages.isNotEmpty()) {
-                unexportedReceivedMessages.addAll(newMessages)
-                unexportedReceivedMessages.empty().let {
-                    chatServiceListener?.onReceive(it)
-                }
-            } else {
-                if (newMessages.isNotEmpty()) {
-                    chatServiceListener?.onReceive(newMessages)
-                }
-            }
-        } else {
-            unexportedReceivedMessages.addAll(newMessages)
-        }
-
+    private fun exportMessages(newMessages: List<M>, completion: () -> Unit) {
+        chatServiceListener?.onReceive(newMessages)
         completion()
     }
 
@@ -190,7 +152,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 socketState = SocketState.CONNECTED
-                shouldExportMessages = true
                 coroutineScope.runOnMainThread {
                     chatServiceListener?.onConnect()
                 }
@@ -229,11 +190,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 }
                 return
             }
-            handleMissingMessages(listOf(message)) {
+            exportMessages(listOf(message)) {
                 if (messageLabeler.isReturnableSocketMessage(message)) {
                     val returnMessage = messageLabeler.returnMessage(message)
                     returnedMessages.add(returnMessage)
-                    chatServiceListener?.returnMessage(returnMessage, shouldExportMessages)
                     socket?.send(json.encodeToString(serializer, returnMessage))
                 }
             }
