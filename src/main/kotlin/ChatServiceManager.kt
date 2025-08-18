@@ -1,7 +1,6 @@
 import kotlinx.coroutines.*
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
-import kotlinx.coroutines.sync.Mutex
 import listeners.ChatServiceListener
 import models.ComparableMessage
 import okhttp3.*
@@ -111,8 +110,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         }
     }
 
-    private fun exportMessages(newMessages: List<M>, completion: () -> Unit) {
-        chatServiceListener?.onReceive(newMessages)
+    private fun exportMessage(newMessage: M, completion: () -> Unit) {
+        chatServiceListener?.onReceive(newMessage)
         completion()
     }
 
@@ -190,7 +189,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 }
                 return
             }
-            exportMessages(listOf(message)) {
+            exportMessage(message) {
                 if (messageLabeler.isReturnableSocketMessage(message)) {
                     val returnMessage = messageLabeler.returnMessage(message)
                     returnedMessages.add(returnMessage)
