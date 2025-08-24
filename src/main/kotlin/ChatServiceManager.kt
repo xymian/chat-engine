@@ -80,6 +80,11 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         client.dispatcher.executorService.shutdown()
     }
 
+    override fun returnMessage(message: M) {
+        returnedMessages.add(message)
+        tryToSendMessage(message)
+    }
+
     override fun sendMessage(message: M) {
         if (message.sender == me) {
             coroutineScope.runInBackground {
