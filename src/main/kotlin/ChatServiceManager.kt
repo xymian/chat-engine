@@ -30,6 +30,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
         override fun returnMessage(message: M) = message
     }
+    private var socketMessageReturnerListener: SocketMessageReturnerListener<M>? = null
 
     private val client = OkHttpClient()
     private var socket: WebSocket? = null
@@ -186,12 +187,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             coroutineScope.runInBackground {
                 localStorageInstance?.store(message)
             }
-            val alreadyReturnedMessage = returnedMessages.find { it.timestamp == message.timestamp }
+            val alreadyReturnedMessage = returnedMessages.find { it.id == message.id }
             if (alreadyReturnedMessage != null) {
                 returnedMessages.remove(alreadyReturnedMessage)
-                coroutineScope.runInBackground {
-                    localStorageInstance?.store(message)
-                }
+                socketMessageReturnerListener?.onReturn(alreadyReturnedMessage)
                 return
             }
             exportMessage(message) {
@@ -231,6 +230,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
         private var chatServiceListener: ChatServiceListener<M>? = null
         private var socketMessageReturner: SocketMessageReturner<M>? = null
+        private var socketMessageReturnerListener: SocketMessageReturnerListener<M>? = null
 
         private var me: String? = null
         private var receivers: List<String> = listOf()
@@ -238,8 +238,14 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
         private var localStorageInstance: ILocalStorage<M>? = null
 
-        fun setMessageLabeler(labeler: SocketMessageReturner<M>): Builder<M> {
+        fun setMessageReturner(labeler: SocketMessageReturner<M>, listener: SocketMessageReturnerListener<M>?): Builder<M> {
             socketMessageReturner = labeler
+            socketMessageReturnerListener = listener
+            return this
+        }
+
+        fun setMessageReturnerListener(listener: SocketMessageReturnerListener<M>?): Builder<M> {
+            socketMessageReturnerListener = listener
             return this
         }
 
@@ -284,6 +290,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 this@Builder.socketMessageReturner?.let {
                     this.socketMessageReturner = it
                 }
+                this.socketMessageReturnerListener = this@Builder.socketMessageReturnerListener
                 this.socketState = SocketState.NOT_CONNECTED
             }
         }
