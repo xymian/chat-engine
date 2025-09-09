@@ -117,7 +117,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun exportMessage(newMessage: M, completion: () -> Unit) {
-        chatServiceListener?.onReceive(newMessage)
+        coroutineScope.runOnMainThread {
+            chatServiceListener?.onReceive(newMessage)
+        }
         completion()
     }
 
@@ -190,7 +192,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             val alreadyReturnedMessage = returnedMessages.find { it.id == message.id }
             if (alreadyReturnedMessage != null) {
                 returnedMessages.remove(alreadyReturnedMessage)
-                socketMessageReturnerListener?.onReturn(alreadyReturnedMessage)
+                coroutineScope.runOnMainThread {
+                    socketMessageReturnerListener?.onReturn(alreadyReturnedMessage)
+                }
                 return
             }
             exportMessage(message) {
