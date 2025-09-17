@@ -116,10 +116,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     private fun exportMessage(newMessage: M, completion: () -> Unit) {
+        completion()
         coroutineScope.runOnMainThread {
             chatServiceListener?.onReceive(newMessage)
         }
-        completion()
     }
 
     private fun scheduleSocketReconnect() {
