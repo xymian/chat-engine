@@ -33,7 +33,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private val client = OkHttpClient()
     private var socket: WebSocket? = null
-    private var localStorageInstance: ILocalStorage<M>? = null
 
     private var delay = 1000L
     private val maxDelay = 16000L
@@ -86,11 +85,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     }
 
     override fun sendMessage(message: M) {
-        if (message.sender == me) {
-            coroutineScope.runInBackground {
-                localStorageInstance?.store(message)
-            }
-        } else {
+        if (message.sender != me) {
             throw Exception("sender has changed: not allowed")
         }
         coroutineScope.runInBackground {
@@ -185,9 +180,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private val returnedMessages = mutableListOf<M>()
     private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageReturner<M>) {
         if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
-            coroutineScope.runInBackground {
-                localStorageInstance?.store(message)
-            }
             val alreadyReturnedMessage = returnedMessages.find { it.id == message.id }
             if (alreadyReturnedMessage != null) {
                 returnedMessages.remove(alreadyReturnedMessage)
@@ -203,9 +195,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         } else {
             when (message.sender) {
                 me -> {
-                    coroutineScope.runInBackground {
-                        localStorageInstance?.store(message)
-                    }
                     coroutineScope.runOnMainThread {
                         chatServiceListener?.onSent(message)
                     }
@@ -235,8 +224,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
         private var receivers: List<String> = listOf()
         private var timestampFormat: String? = null
 
-        private var localStorageInstance: ILocalStorage<M>? = null
-
         fun setMessageReturner(labeler: SocketMessageReturner<M>): Builder<M> {
             socketMessageReturner = labeler
             return this
@@ -244,11 +231,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
         fun setTimestampFormat(pattern: String): Builder<M> {
             timestampFormat = pattern
-            return this
-        }
-
-        fun <N: ComparableMessage> setStorageInterface(storage: ILocalStorage<N>): Builder<M> {
-            localStorageInstance = cast(storage)
             return this
         }
 
@@ -278,7 +260,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 chatServiceListener = this@Builder.chatServiceListener
                 this.me = this@Builder.me
                 this.receivers = this@Builder.receivers
-                this.localStorageInstance = this@Builder.localStorageInstance
                 this.timestampFormat = this@Builder.timestampFormat
                 this@Builder.socketMessageReturner?.let {
                     this.socketMessageReturner = it
