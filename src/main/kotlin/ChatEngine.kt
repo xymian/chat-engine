@@ -1,14 +1,14 @@
 import kotlinx.coroutines.*
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
-import listeners.ChatServiceListener
+import listeners.ChatEngineEventListener
 import models.ComparableMessage
 import okhttp3.*
 import utils.*
 import java.lang.Exception
 
-class ChatServiceManager<M: ComparableMessage>
-private constructor(private val serializer: KSerializer<M>) : IChatServiceManager<M> {
+class ChatEngine<M: ComparableMessage>
+private constructor(private val serializer: KSerializer<M>) : IChatEngine<M> {
 
     private var unsentMessages = mutableSetOf<M>()
     val socketIsConnected: Boolean
@@ -22,10 +22,10 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private var me: String? = null
     private var receivers: List<String> = listOf()
 
-    private var chatServiceListener: ChatServiceListener<M>? = null
-    private var socketMessageReturner: SocketMessageReturner<M> = object: SocketMessageReturner<M> {
+    private var chatEngineEventListener: ChatEngineEventListener<M>? = null
+    private var messageReturner: MessageReturner<M> = object: MessageReturner<M> {
 
-        override fun isReturnableSocketMessage(message: M) = false
+        override fun isMessageReturnable(message: M) = false
 
         override fun returnMessage(message: M) = message
     }
@@ -112,7 +112,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun exportMessage(newMessage: M, completion: () -> Unit) {
         completion()
         coroutineScope.runOnMainThread {
-            chatServiceListener?.onReceive(newMessage)
+            chatEngineEventListener?.onReceive(newMessage)
         }
     }
 
@@ -147,13 +147,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                onSocketMessageReceived(json.decodeFromString(serializer, text), socketMessageReturner)
+                onSocketMessageReceived(json.decodeFromString(serializer, text), messageReturner)
             }
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 socketState = SocketState.CONNECTED
                 coroutineScope.runOnMainThread {
-                    chatServiceListener?.onConnect()
+                    chatEngineEventListener?.onConnect()
                 }
                 sendPendingMessagesFirst(listOf())
             }
@@ -163,7 +163,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun onSocketClosed(code: Int, reason: String) {
         socketState = SocketState.CLOSED
         coroutineScope.runOnMainThread {
-            chatServiceListener?.onClose(code, reason)
+            chatEngineEventListener?.onClose(code, reason)
         }
         scheduleServiceConnect()
     }
@@ -171,13 +171,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     private fun onSocketFailure(t: Throwable, response: Response?) {
         socketState = SocketState.FAILED
         coroutineScope.runOnMainThread {
-            chatServiceListener?.onDisconnect(t, response)
+            chatEngineEventListener?.onDisconnect(t, response)
         }
         scheduleServiceConnect()
     }
 
     private val returnedMessages = mutableListOf<M>()
-    private fun onSocketMessageReceived(message: M, messageLabeler: SocketMessageReturner<M>) {
+    private fun onSocketMessageReceived(message: M, messageLabeler: MessageReturner<M>) {
         if (isSenderPartOfThisChatAndIsntMe(message.sender)) {
             val alreadyReturnedMessage = returnedMessages.find { it.id == message.id }
             if (alreadyReturnedMessage != null) {
@@ -185,7 +185,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 return
             }
             exportMessage(message) {
-                if (messageLabeler.isReturnableSocketMessage(message)) {
+                if (messageLabeler.isMessageReturnable(message)) {
                     val returnMessage = messageLabeler.returnMessage(message)
                     returnedMessages.add(returnMessage)
                     socket?.send(json.encodeToString(serializer, returnMessage))
@@ -195,12 +195,12 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             when (message.sender) {
                 me -> {
                     coroutineScope.runOnMainThread {
-                        chatServiceListener?.onSent(message)
+                        chatEngineEventListener?.onSent(message)
                     }
                 }
                 else -> {
                     coroutineScope.runOnMainThread {
-                        chatServiceListener?.onError(
+                        chatEngineEventListener?.onError(
                             ChatServiceErrorResponse(
                                 statusCode = -1, null, ChatServiceError.MESSAGE_LEAK_ERROR.name,
                                 "unknown message sender ${message.sender}"
@@ -216,14 +216,14 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
     class Builder<M: ComparableMessage> {
         private var socketURL: String? = null
 
-        private var chatServiceListener: ChatServiceListener<M>? = null
-        private var socketMessageReturner: SocketMessageReturner<M>? = null
+        private var chatEngineEventListener: ChatEngineEventListener<M>? = null
+        private var messageReturner: MessageReturner<M>? = null
 
         private var me: String? = null
         private var receivers: List<String> = listOf()
 
-        fun setMessageReturner(labeler: SocketMessageReturner<M>): Builder<M> {
-            socketMessageReturner = labeler
+        fun setMessageReturner(labeler: MessageReturner<M>): Builder<M> {
+            messageReturner = labeler
             return this
         }
 
@@ -237,8 +237,8 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return this
         }
 
-        fun setChatServiceListener(listener: ChatServiceListener<M>): Builder<M> {
-            chatServiceListener = listener
+        fun setChatServiceListener(listener: ChatEngineEventListener<M>): Builder<M> {
+            chatEngineEventListener = listener
             return this
         }
 
@@ -247,14 +247,14 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
             return this
         }
 
-        fun build(serializer: KSerializer<M>): ChatServiceManager<M> {
-            return ChatServiceManager(serializer).apply {
+        fun build(serializer: KSerializer<M>): ChatEngine<M> {
+            return ChatEngine(serializer).apply {
                 socketURL = this@Builder.socketURL
-                chatServiceListener = this@Builder.chatServiceListener
+                chatEngineEventListener = this@Builder.chatEngineEventListener
                 this.me = this@Builder.me
                 this.receivers = this@Builder.receivers
-                this@Builder.socketMessageReturner?.let {
-                    this.socketMessageReturner = it
+                this@Builder.messageReturner?.let {
+                    this.messageReturner = it
                 }
                 this.socketState = SocketState.NOT_CONNECTED
             }

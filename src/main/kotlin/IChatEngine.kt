@@ -1,6 +1,6 @@
 import models.ComparableMessage
 
-interface IChatServiceManager<M: ComparableMessage> {
+interface IChatEngine<M: ComparableMessage> {
     fun connect()
     fun disconnect()
     fun sendMessage(message: M)
