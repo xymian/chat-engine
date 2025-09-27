@@ -21,7 +21,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
     private var me: String? = null
     private var receivers: List<String> = listOf()
-    private var timestampFormat: String? = null
 
     private var chatServiceListener: ChatServiceListener<M>? = null
     private var socketMessageReturner: SocketMessageReturner<M> = object: SocketMessageReturner<M> {
@@ -222,15 +221,9 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
 
         private var me: String? = null
         private var receivers: List<String> = listOf()
-        private var timestampFormat: String? = null
 
         fun setMessageReturner(labeler: SocketMessageReturner<M>): Builder<M> {
             socketMessageReturner = labeler
-            return this
-        }
-
-        fun setTimestampFormat(pattern: String): Builder<M> {
-            timestampFormat = pattern
             return this
         }
 
@@ -260,7 +253,6 @@ private constructor(private val serializer: KSerializer<M>) : IChatServiceManage
                 chatServiceListener = this@Builder.chatServiceListener
                 this.me = this@Builder.me
                 this.receivers = this@Builder.receivers
-                this.timestampFormat = this@Builder.timestampFormat
                 this@Builder.socketMessageReturner?.let {
                     this.socketMessageReturner = it
                 }
