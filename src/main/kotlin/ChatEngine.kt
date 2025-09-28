@@ -87,9 +87,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatEngine<M> {
         if (message.sender != me) {
             throw Exception("sender has changed: not allowed")
         }
-        coroutineScope.runInBackground {
-            sendPendingMessagesFirst(listOf(message))
-        }
+        sendPendingMessagesFirst(listOf(message))
     }
 
     private fun tryToSendMessage(message: M) {
