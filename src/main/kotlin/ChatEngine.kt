@@ -47,11 +47,13 @@ private constructor(private val serializer: KSerializer<M>) : IChatEngine<M> {
         connect()
     }
 
+    override fun setListener(listener: ChatEngineEventListener<M>) {
+        chatEngineEventListener = listener
+    }
+
     override fun connect() {
         if (!socketIsConnected) {
-            coroutineScope.runInBackground {
-                startSocket()
-            }
+            startSocket()
         }
     }
 
@@ -66,9 +68,7 @@ private constructor(private val serializer: KSerializer<M>) : IChatEngine<M> {
     private fun startSocket() {
         if (!socketIsConnected) {
             socketURL?.let {
-                if (!socketIsConnected) {
-                    socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
-                }
+                socket = client.newWebSocket(Request.Builder().url(it).build(), webSocketListener())
             }
         }
     }
